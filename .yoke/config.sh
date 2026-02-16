@@ -12,13 +12,19 @@ YOKE_TD_PREFIX="td"
 # Selected coding agent for writing (codex or claude).
 YOKE_WRITER_AGENT="codex"
 
+# Optional writer command for yoke daemon loops.
+# Runs with ISSUE_ID, ROOT_DIR, TD_PREFIX, and YOKE_ROLE=writer.
+# Expected behavior: implement the issue and transition state via yoke submit.
+YOKE_WRITER_CMD=""
+
 # Selected coding agent for reviewing (codex or claude).
 YOKE_REVIEWER_AGENT="codex"
 
 # Optional reviewer agent command. Runs when using: yoke review --agent
-# ISSUE_ID and ROOT_DIR are exported for the command.
+# and yoke daemon. Runs with ISSUE_ID, ROOT_DIR, TD_PREFIX, and YOKE_ROLE=reviewer.
+# Expected behavior for daemon mode: execute yoke review --approve or --reject.
 # Example:
-# YOKE_REVIEW_CMD='codex run --prompt-file .yoke/prompts/reviewer.md --var issue="$ISSUE_ID"'
+# YOKE_REVIEW_CMD='codex exec "Review $ISSUE_ID and run yoke review $ISSUE_ID --approve or --reject with reason"'
 YOKE_REVIEW_CMD=""
 
 # Pull request template path.

@@ -16,6 +16,7 @@ YOKE_BASE_BRANCH="main"
 YOKE_CHECK_CMD=".yoke/checks.sh"
 YOKE_TD_PREFIX="td"
 YOKE_WRITER_AGENT="codex"
+YOKE_WRITER_CMD=""
 YOKE_REVIEWER_AGENT="codex"
 YOKE_REVIEW_CMD=""
 YOKE_PR_TEMPLATE=".github/pull_request_template.md"
@@ -51,6 +52,18 @@ YOKE_PR_TEMPLATE=".github/pull_request_template.md"
 - Set by `yoke init` autodetect/prompt flow.
 - Current behavior: metadata/config signal for operator workflows and future routing.
 
+### `YOKE_WRITER_CMD`
+
+- Command executed by `yoke daemon` when processing writer work.
+- Executed with `bash -lc`.
+- Environment passed:
+  - `ISSUE_ID`
+  - `ROOT_DIR`
+  - `TD_PREFIX`
+  - `YOKE_ROLE=writer`
+- Expected behavior: implement and transition issue to review (for example via `yoke submit`).
+- Empty by default.
+
 ### `YOKE_REVIEWER_AGENT`
 
 - Preferred reviewer agent identity (`codex` or `claude`).
@@ -59,17 +72,21 @@ YOKE_PR_TEMPLATE=".github/pull_request_template.md"
 
 ### `YOKE_REVIEW_CMD`
 
-- Command executed when `yoke review --agent` is used.
+- Command executed when `yoke review --agent` is used and by `yoke daemon` reviewer steps.
 - Executed with `bash -lc`.
 - Environment passed:
   - `ISSUE_ID`
   - `ROOT_DIR`
+  - `TD_PREFIX`
+  - `YOKE_ROLE=reviewer`
+- Expected behavior for daemon mode: transition review state via `yoke review --approve` or `yoke review --reject`.
 - Empty by default.
 
 Example:
 
 ```bash
-YOKE_REVIEW_CMD='codex run --prompt-file .yoke/prompts/reviewer.md --var issue="$ISSUE_ID"'
+YOKE_WRITER_CMD='codex exec "Implement $ISSUE_ID, commit, then run yoke submit $ISSUE_ID --done \"...\" --remaining \"...\""'
+YOKE_REVIEW_CMD='codex exec "Review $ISSUE_ID and run yoke review $ISSUE_ID --approve or --reject with reason"'
 ```
 
 ### `YOKE_PR_TEMPLATE`
@@ -86,6 +103,6 @@ YOKE_REVIEW_CMD='codex run --prompt-file .yoke/prompts/reviewer.md --var issue="
 ## Best practices
 
 - Keep `YOKE_CHECK_CMD` deterministic and non-interactive.
-- Keep `YOKE_REVIEW_CMD` idempotent and fail-fast.
+- Keep `YOKE_WRITER_CMD` and `YOKE_REVIEW_CMD` idempotent and fail-fast.
 - Version-control `.yoke/config.sh` defaults appropriate for your team.
 - Use `yoke doctor` after config edits.

@@ -13,6 +13,7 @@ It uses:
 - Applies quality gates before review handoff.
 - Creates and updates PR flow with predictable branch naming (`yoke/<td-id>`).
 - Exposes a deterministic `yoke status` snapshot for agent preflight checks.
+- Supports an automatic daemon loop for `code -> review -> code` execution.
 - Provides explicit, agent-oriented `--help` output on every command.
 
 ## Documentation Map
@@ -58,13 +59,16 @@ make release
 # 3) inspect current workflow context
 ./bin/yoke status
 
-# 4) claim work
+# 4) run automated loop once (or omit --once for continuous mode)
+./bin/yoke daemon --once
+
+# 5) claim work manually (optional)
 ./bin/yoke claim
 
-# 5) submit work for review
+# 6) submit work for review
 ./bin/yoke submit td-a1b2 --done "Implemented X" --remaining "Add tests"
 
-# 6) approve or reject review
+# 7) approve or reject review
 ./bin/yoke review td-a1b2 --approve
 # or
 ./bin/yoke review td-a1b2 --reject "Missing regression test"
@@ -72,6 +76,10 @@ make release
 
 `init` also asks for the `td` issue prefix (default: `td`).
 This prefix is used when parsing issue IDs from `td` output and branch names.
+
+For daemon mode, configure:
+- `YOKE_WRITER_CMD` to implement and submit an issue.
+- `YOKE_REVIEW_CMD` to approve/reject an issue.
 
 ## Quality
 

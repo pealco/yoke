@@ -52,6 +52,7 @@ Initialization:
 yoke init [--writer-agent codex|claude] [--reviewer-agent codex|claude] [--td-prefix PREFIX] [--no-prompt]
 yoke doctor
 yoke status
+yoke daemon [--once] [--interval VALUE] [--max-iterations N]
 yoke claim [td-id]
 yoke submit [td-id] --done "..." --remaining "..." [--decision "..."] [--uncertain "..."]
 yoke review [td-id] [--agent] [--note "..."] [--approve | --reject "..."]
@@ -64,6 +65,7 @@ Edit `.yoke/config.sh`:
 
 - `YOKE_BASE_BRANCH`: PR base branch.
 - `YOKE_CHECK_CMD`: quality gate command/path.
+- `YOKE_WRITER_CMD`: optional writer automation command (daemon loop).
 - `YOKE_REVIEW_CMD`: optional reviewer automation command.
 - `YOKE_PR_TEMPLATE`: PR template path.
 

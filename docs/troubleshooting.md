@@ -65,7 +65,36 @@ Fix:
 Example:
 
 ```bash
-YOKE_REVIEW_CMD='codex run --prompt-file .yoke/prompts/reviewer.md --var issue="$ISSUE_ID"'
+YOKE_REVIEW_CMD='codex exec "Review $ISSUE_ID and run yoke review $ISSUE_ID --approve or --reject with reason"'
+```
+
+## `YOKE_WRITER_CMD is empty in .yoke/config.sh`
+
+Cause:
+- `yoke daemon` was used but no writer command is configured
+
+Fix:
+- set `YOKE_WRITER_CMD` in `.yoke/config.sh`
+
+Example:
+
+```bash
+YOKE_WRITER_CMD='codex exec "Implement $ISSUE_ID, commit, then run yoke submit $ISSUE_ID --done \"...\" --remaining \"...\""'
+```
+
+## `writer/reviewer command did not advance issue ...`
+
+Cause:
+- daemon ran role command but td status did not change
+- this indicates the role command did not call the expected lifecycle transition
+
+Fix:
+- for writer command: ensure it executes `yoke submit <issue> --done ... --remaining ...`
+- for reviewer command: ensure it executes `yoke review <issue> --approve` or `--reject "..."`
+- rerun with one-shot mode while debugging:
+
+```bash
+yoke daemon --once
 ```
 
 ## PR not created on submit

@@ -4,6 +4,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -20,6 +22,7 @@ const (
 	defaultCheckCmd   = ".yoke/checks.sh"
 	defaultPRTemplate = ".github/pull_request_template.md"
 	defaultTDPrefix   = "td"
+	defaultDaemonPoll = 30 * time.Second
 )
 
 var (
@@ -57,6 +60,7 @@ type config struct {
 	CheckCmd      string
 	TDPrefix      string
 	WriterAgent   string
+	WriterCmd     string
 	ReviewerAgent string
 	ReviewCmd     string
 	PRTemplate    string
@@ -83,6 +87,8 @@ func run(args []string) error {
 		return cmdDoctor(args)
 	case "status":
 		return cmdStatus(args)
+	case "daemon":
+		return cmdDaemon(args)
 	case "claim":
 		return cmdClaim(args)
 	case "submit":
@@ -113,6 +119,8 @@ func cmdHelp(args []string) error {
 		printDoctorUsage()
 	case "status":
 		printStatusUsage()
+	case "daemon":
+		printDaemonUsage()
 	case "claim":
 		printClaimUsage()
 	case "submit":
@@ -291,6 +299,8 @@ echo "No checks configured. Edit .yoke/checks.sh."
 	note("TD prefix: " + valueOrUnset(cfg.TDPrefix))
 	note("Writer agent: " + valueOrUnset(cfg.WriterAgent))
 	note("Reviewer agent: " + valueOrUnset(cfg.ReviewerAgent))
+	note("Writer command: " + commandConfigStatus(cfg.WriterCmd))
+	note("Reviewer command: " + commandConfigStatus(cfg.ReviewCmd))
 	return nil
 }
 
@@ -347,6 +357,8 @@ func cmdDoctor(args []string) error {
 	} else {
 		note("reviewer agent: unset")
 	}
+	note("writer command: " + commandConfigStatus(cfg.WriterCmd))
+	note("reviewer command: " + commandConfigStatus(cfg.ReviewCmd))
 
 	if failures > 0 {
 		return errors.New("doctor failed")
@@ -379,7 +391,7 @@ func cmdStatus(args []string) error {
 	tdFocus := "unavailable"
 	tdNext := "unavailable"
 	if tdAvailable {
-		tdFocus = issueOrNone(extractIssueID(commandCombinedOutput("td", "current"), cfg.TDPrefix))
+		tdFocus = issueOrNone(focusedIssueID(cfg.TDPrefix))
 		tdNext = issueOrNone(extractIssueID(commandCombinedOutput("td", "next"), cfg.TDPrefix))
 	}
 
@@ -388,14 +400,332 @@ func cmdStatus(args []string) error {
 	note("td_prefix: " + cfg.TDPrefix)
 	note("writer_agent: " + valueOrUnset(cfg.WriterAgent))
 	note("writer_agent_status: " + configuredAgentStatus(cfg.WriterAgent))
+	note("writer_command: " + commandConfigStatus(cfg.WriterCmd))
 	note("reviewer_agent: " + valueOrUnset(cfg.ReviewerAgent))
 	note("reviewer_agent_status: " + configuredAgentStatus(cfg.ReviewerAgent))
+	note("reviewer_command: " + commandConfigStatus(cfg.ReviewCmd))
 	note("td_focus: " + tdFocus)
 	note("td_next: " + tdNext)
 	note("tool_git: " + availabilityLabel(commandExists("git")))
 	note("tool_td: " + availabilityLabel(tdAvailable))
 	note("tool_gh: " + availabilityLabel(commandExists("gh")))
 	return nil
+}
+
+type daemonLoopOptions struct {
+	Once          bool
+	Interval      time.Duration
+	MaxIterations int
+	WriterCmd     string
+	ReviewerCmd   string
+}
+
+func cmdDaemon(args []string) error {
+	options := daemonLoopOptions{
+		Interval: defaultDaemonPoll,
+	}
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--once":
+			options.Once = true
+		case "--interval":
+			i++
+			if i >= len(args) {
+				return errors.New("--interval requires a value")
+			}
+			interval, err := parseDaemonInterval(args[i])
+			if err != nil {
+				return err
+			}
+			options.Interval = interval
+		case "--max-iterations":
+			i++
+			if i >= len(args) {
+				return errors.New("--max-iterations requires a value")
+			}
+			parsed, err := strconv.Atoi(args[i])
+			if err != nil || parsed <= 0 {
+				return fmt.Errorf("invalid --max-iterations value: %s", args[i])
+			}
+			options.MaxIterations = parsed
+		case "--writer-cmd":
+			i++
+			if i >= len(args) {
+				return errors.New("--writer-cmd requires a value")
+			}
+			options.WriterCmd = args[i]
+		case "--reviewer-cmd":
+			i++
+			if i >= len(args) {
+				return errors.New("--reviewer-cmd requires a value")
+			}
+			options.ReviewerCmd = args[i]
+		case "-h", "--help":
+			printDaemonUsage()
+			return nil
+		default:
+			return fmt.Errorf("unknown daemon argument: %s", args[i])
+		}
+	}
+
+	if !commandExists("td") {
+		return fmt.Errorf("missing required command: td")
+	}
+
+	root, err := ensureRepoRoot()
+	if err != nil {
+		return err
+	}
+	cfg, err := loadConfig(root)
+	if err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(options.WriterCmd) == "" {
+		options.WriterCmd = cfg.WriterCmd
+	}
+	if strings.TrimSpace(options.ReviewerCmd) == "" {
+		options.ReviewerCmd = cfg.ReviewCmd
+	}
+	if strings.TrimSpace(options.WriterCmd) == "" {
+		return errors.New("YOKE_WRITER_CMD is empty in .yoke/config.sh (required for yoke daemon)")
+	}
+	if strings.TrimSpace(options.ReviewerCmd) == "" {
+		return errors.New("YOKE_REVIEW_CMD is empty in .yoke/config.sh (required for yoke daemon)")
+	}
+
+	note("Daemon started.")
+	note("  poll interval: " + options.Interval.String())
+	if options.Once {
+		note("  mode: once")
+	} else {
+		note("  mode: continuous")
+	}
+	if options.MaxIterations > 0 {
+		note(fmt.Sprintf("  max iterations: %d", options.MaxIterations))
+	}
+
+	for iteration := 1; ; iteration++ {
+		action, err := runDaemonIteration(root, cfg, options.WriterCmd, options.ReviewerCmd)
+		if err != nil {
+			return err
+		}
+
+		if options.Once {
+			note("Daemon completed single iteration: " + action)
+			return nil
+		}
+		if options.MaxIterations > 0 && iteration >= options.MaxIterations {
+			note(fmt.Sprintf("Daemon reached max iterations (%d); exiting.", options.MaxIterations))
+			return nil
+		}
+
+		if action == "idle" {
+			time.Sleep(options.Interval)
+		}
+	}
+}
+
+func parseDaemonInterval(raw string) (time.Duration, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return 0, errors.New("interval cannot be empty")
+	}
+
+	duration, durationErr := time.ParseDuration(value)
+	if durationErr == nil {
+		if duration <= 0 {
+			return 0, fmt.Errorf("interval must be positive: %s", raw)
+		}
+		return duration, nil
+	}
+
+	seconds, intErr := strconv.Atoi(value)
+	if intErr != nil || seconds <= 0 {
+		return 0, fmt.Errorf("invalid interval %q: use positive seconds (e.g. 30) or duration (e.g. 30s, 1m)", raw)
+	}
+	return time.Duration(seconds) * time.Second, nil
+}
+
+func runDaemonIteration(root string, cfg config, writerCmd, reviewerCmd string) (string, error) {
+	reviewable := firstReviewableIssueID(cfg.TDPrefix)
+	if reviewable != "" {
+		if err := runDaemonRoleCommand("reviewer", reviewable, reviewerCmd, root, cfg.TDPrefix); err != nil {
+			return "", err
+		}
+		return "reviewed " + reviewable, nil
+	}
+
+	inProgress, err := focusedOrInProgressIssueID(cfg.TDPrefix)
+	if err != nil {
+		return "", err
+	}
+	if inProgress != "" {
+		if err := ensureIssueBranchCheckedOut(inProgress); err != nil {
+			return "", err
+		}
+		if err := runDaemonRoleCommand("writer", inProgress, writerCmd, root, cfg.TDPrefix); err != nil {
+			return "", err
+		}
+		return "wrote " + inProgress, nil
+	}
+
+	next := nextIssueID(cfg.TDPrefix)
+	if next != "" {
+		note("Daemon claiming next issue: " + next)
+		if err := cmdClaim([]string{next}); err != nil {
+			return "", err
+		}
+		return "claimed " + next, nil
+	}
+
+	return "idle", nil
+}
+
+func runDaemonRoleCommand(role, issue, shellCommand, root, tdPrefix string) error {
+	previousStatus, err := issueStatus(issue)
+	if err != nil {
+		return err
+	}
+
+	note(fmt.Sprintf("Daemon running %s command for %s", role, issue))
+	cmd := exec.Command("bash", "-lc", shellCommand)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(),
+		"ISSUE_ID="+issue,
+		"ROOT_DIR="+root,
+		"TD_PREFIX="+tdPrefix,
+		"YOKE_ROLE="+role,
+	)
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	currentStatus, err := issueStatus(issue)
+	if err != nil {
+		return err
+	}
+	if currentStatus == previousStatus {
+		return fmt.Errorf("%s command did not advance issue %s (still %s); ensure the command transitions td state", role, issue, currentStatus)
+	}
+
+	note(fmt.Sprintf("Daemon observed %s status transition: %s -> %s", issue, previousStatus, currentStatus))
+	return nil
+}
+
+func focusedOrInProgressIssueID(prefix string) (string, error) {
+	focused := focusedIssueID(prefix)
+	if focused != "" {
+		status, err := issueStatus(focused)
+		if err != nil {
+			return "", err
+		}
+		if status == "in_progress" {
+			return focused, nil
+		}
+	}
+	return firstIssueByStatus(prefix, "in_progress")
+}
+
+func focusedIssueID(prefix string) string {
+	return parseFocusedIssueID(commandCombinedOutput("td", "current"), prefix)
+}
+
+func parseFocusedIssueID(raw, prefix string) string {
+	for _, line := range strings.Split(raw, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "FOCUSED:") {
+			continue
+		}
+		return extractIssueID(trimmed, prefix)
+	}
+	return ""
+}
+
+func ensureIssueBranchCheckedOut(issue string) error {
+	target := branchForIssue(issue)
+	current := strings.TrimSpace(commandCombinedOutput("git", "rev-parse", "--abbrev-ref", "HEAD"))
+	if current == target {
+		return nil
+	}
+
+	if refExists("refs/heads/" + target) {
+		return runCommand("git", "switch", target)
+	}
+	return runCommand("git", "switch", "-c", target)
+}
+
+type tdListIssue struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+func firstIssueByStatus(prefix, status string) (string, error) {
+	output := commandCombinedOutput("td", "list", "--status", status, "--format", "json", "--limit", "20")
+	issues, err := parseTDListIssuesJSON(output)
+	if err != nil {
+		return "", err
+	}
+	return firstMatchingIssueID(issues, prefix, status), nil
+}
+
+func parseTDListIssuesJSON(raw string) ([]tdListIssue, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "null" {
+		return nil, nil
+	}
+
+	var issues []tdListIssue
+	if err := json.Unmarshal([]byte(trimmed), &issues); err != nil {
+		return nil, fmt.Errorf("parse td list json: %w", err)
+	}
+	return issues, nil
+}
+
+func firstMatchingIssueID(issues []tdListIssue, prefix, status string) string {
+	targetStatus := strings.ToLower(strings.TrimSpace(status))
+	for _, issue := range issues {
+		issueID := strings.ToLower(strings.TrimSpace(issue.ID))
+		issueStatus := strings.ToLower(strings.TrimSpace(issue.Status))
+		if issueID == "" {
+			continue
+		}
+		if targetStatus != "" && issueStatus != targetStatus {
+			continue
+		}
+		if looksLikeIssueID(issueID, prefix) {
+			return issueID
+		}
+	}
+	return ""
+}
+
+func issueStatus(issue string) (string, error) {
+	output := commandCombinedOutput("td", "show", issue, "--json")
+	return parseIssueStatusJSON(output)
+}
+
+func parseIssueStatusJSON(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", errors.New("empty issue payload")
+	}
+
+	var payload struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return "", fmt.Errorf("parse td show json: %w", err)
+	}
+
+	status := strings.ToLower(strings.TrimSpace(payload.Status))
+	if status == "" {
+		return "", errors.New("issue payload missing status")
+	}
+	return status, nil
 }
 
 func cmdClaim(args []string) error {
@@ -668,6 +998,8 @@ func cmdReview(args []string) error {
 		cmd.Env = append(os.Environ(),
 			"ISSUE_ID="+issue,
 			"ROOT_DIR="+root,
+			"TD_PREFIX="+cfg.TDPrefix,
+			"YOKE_ROLE=reviewer",
 		)
 		if err := cmd.Run(); err != nil {
 			return err
@@ -717,6 +1049,7 @@ func loadConfig(root string) (config, error) {
 		CheckCmd:      defaultCheckCmd,
 		TDPrefix:      defaultTDPrefix,
 		WriterAgent:   "",
+		WriterCmd:     "",
 		ReviewerAgent: "",
 		ReviewCmd:     "",
 		PRTemplate:    defaultPRTemplate,
@@ -753,6 +1086,8 @@ func loadConfig(root string) (config, error) {
 			cfg.TDPrefix = value
 		case "YOKE_WRITER_AGENT":
 			cfg.WriterAgent = value
+		case "YOKE_WRITER_CMD":
+			cfg.WriterCmd = value
 		case "YOKE_REVIEWER_AGENT":
 			cfg.ReviewerAgent = value
 		case "YOKE_REVIEW_CMD":
@@ -816,13 +1151,19 @@ YOKE_TD_PREFIX=%s
 # Selected coding agent for writing (codex or claude).
 YOKE_WRITER_AGENT=%s
 
+# Optional writer command for yoke daemon loops.
+# Runs with ISSUE_ID, ROOT_DIR, TD_PREFIX, and YOKE_ROLE=writer.
+# Expected behavior: implement the issue and transition state via yoke submit.
+YOKE_WRITER_CMD=%s
+
 # Selected coding agent for reviewing (codex or claude).
 YOKE_REVIEWER_AGENT=%s
 
 # Optional reviewer agent command. Runs when using: yoke review --agent
-# ISSUE_ID and ROOT_DIR are exported for the command.
+# and yoke daemon. Runs with ISSUE_ID, ROOT_DIR, TD_PREFIX, and YOKE_ROLE=reviewer.
+# Expected behavior for daemon mode: execute yoke review --approve or --reject.
 # Example:
-# YOKE_REVIEW_CMD='codex run --prompt-file .yoke/prompts/reviewer.md --var issue="$ISSUE_ID"'
+# YOKE_REVIEW_CMD='codex exec "Review $ISSUE_ID and run yoke review $ISSUE_ID --approve or --reject with reason"'
 YOKE_REVIEW_CMD=%s
 
 # Pull request template path.
@@ -832,6 +1173,7 @@ YOKE_PR_TEMPLATE=%s
 		quoteShell(cfg.CheckCmd),
 		quoteShell(cfg.TDPrefix),
 		quoteShell(cfg.WriterAgent),
+		quoteShell(cfg.WriterCmd),
 		quoteShell(cfg.ReviewerAgent),
 		quoteShell(cfg.ReviewCmd),
 		quoteShell(cfg.PRTemplate),
@@ -1035,6 +1377,13 @@ func configuredAgentStatus(agentID string) string {
 		return "unset"
 	}
 	return agentAvailabilityStatus(agentID)
+}
+
+func commandConfigStatus(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "unset"
+	}
+	return "configured"
 }
 
 func availabilityLabel(available bool) string {
@@ -1267,6 +1616,7 @@ Usage:
   yoke init [options]
   yoke doctor
   yoke status
+  yoke daemon [options]
   yoke claim [<prefix>-issue-id]
   yoke submit [<prefix>-issue-id] --done "..." --remaining "..." [options]
   yoke review [<prefix>-issue-id] [options]
@@ -1276,6 +1626,7 @@ Commands:
   init    Initialize scaffold, detect available agents, and persist writer/reviewer choices.
   doctor  Validate required tools/config and report agent availability.
   status  Print current repo/task/agent status snapshot for deterministic agent consumption.
+  daemon  Run continuous writer/reviewer automation loop over td issue states.
   claim   Start work on an issue (td start + branch switch/create).
   submit  Run checks, create td handoff, move issue to review, and open/update PR workflow.
   review  Review an issue, optionally run reviewer automation, then approve/reject.
@@ -1316,7 +1667,9 @@ Outputs:
   Updates .yoke/config.sh keys:
   - YOKE_TD_PREFIX
   - YOKE_WRITER_AGENT
+  - YOKE_WRITER_CMD
   - YOKE_REVIEWER_AGENT
+  - YOKE_REVIEW_CMD
 `)
 }
 
@@ -1333,6 +1686,7 @@ Checks performed:
   - Config file presence: .yoke/config.sh
   - Configured td issue prefix
   - Configured writer/reviewer agent availability on PATH
+  - Configured writer/reviewer daemon commands
 
 Exit behavior:
   - Exit 0 when required checks pass.
@@ -1356,6 +1710,7 @@ Output fields:
   - td_prefix: configured issue prefix from YOKE_TD_PREFIX
   - writer_agent / reviewer_agent: configured agent ids (or unset)
   - writer_agent_status / reviewer_agent_status: binary availability summary
+  - writer_command / reviewer_command: daemon command readiness
   - td_focus: focused issue parsed from td current (or none/unavailable)
   - td_next: next issue parsed from td next (or none/unavailable)
   - tool_git / tool_td / tool_gh: command availability
@@ -1367,6 +1722,41 @@ Usage guidance for agents:
 
 Example:
   yoke status
+`)
+}
+
+func printDaemonUsage() {
+	fmt.Print(`Usage:
+  yoke daemon [options]
+
+Purpose:
+  Run an automatic code -> review loop for td issues using configured writer/reviewer commands.
+
+Loop priority (each iteration):
+  1) Review first issue from td reviewable via reviewer command.
+  2) Otherwise run writer command on focused/in_progress issue.
+  3) Otherwise claim td next issue.
+  4) Otherwise idle (sleep and poll again in continuous mode).
+
+Command contract:
+  - Writer command comes from YOKE_WRITER_CMD (or --writer-cmd override).
+  - Reviewer command comes from YOKE_REVIEW_CMD (or --reviewer-cmd override).
+  - Both run with env vars:
+      ISSUE_ID, ROOT_DIR, TD_PREFIX, YOKE_ROLE
+  - Commands must transition td status (writer -> submit/review, reviewer -> approve/reject).
+    If status does not change, daemon exits with an error to avoid infinite loops.
+
+Options:
+  --once                    Run a single iteration and exit.
+  --interval VALUE          Poll interval for idle loops. Accepts seconds (30) or durations (30s, 1m).
+  --max-iterations N        Stop after N iterations in continuous mode.
+  --writer-cmd CMD          Override writer command for this daemon run.
+  --reviewer-cmd CMD        Override reviewer command for this daemon run.
+
+Examples:
+  yoke daemon --once
+  yoke daemon --interval 45s
+  yoke daemon --max-iterations 10
 `)
 }
 
@@ -1437,6 +1827,7 @@ Purpose:
 Behavior:
   - If issue id omitted, selects first item from td reviewable.
   - Optional reviewer automation can run before final action.
+  - Reviewer automation receives ISSUE_ID, ROOT_DIR, TD_PREFIX, and YOKE_ROLE=reviewer.
   - Approve closes review path; reject returns work to writer path.
 
 Inputs:

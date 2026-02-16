@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestParseShellValue(t *testing.T) {
@@ -58,6 +59,7 @@ YOKE_BASE_BRANCH="develop"
 YOKE_CHECK_CMD=".yoke/checks.sh"
 YOKE_TD_PREFIX="work"
 YOKE_WRITER_AGENT="codex"
+YOKE_WRITER_CMD='echo writing'
 YOKE_REVIEWER_AGENT="claude"
 YOKE_REVIEW_CMD='echo reviewing'
 YOKE_PR_TEMPLATE=".github/pull_request_template.md"
@@ -83,6 +85,9 @@ YOKE_PR_TEMPLATE=".github/pull_request_template.md"
 	}
 	if cfg.WriterAgent != "codex" {
 		t.Fatalf("WriterAgent = %q", cfg.WriterAgent)
+	}
+	if cfg.WriterCmd != "echo writing" {
+		t.Fatalf("WriterCmd = %q", cfg.WriterCmd)
 	}
 	if cfg.ReviewerAgent != "claude" {
 		t.Fatalf("ReviewerAgent = %q", cfg.ReviewerAgent)
@@ -247,6 +252,113 @@ func TestConfiguredAgentStatus(t *testing.T) {
 	}
 }
 
+func TestCommandConfigStatus(t *testing.T) {
+	t.Parallel()
+
+	if got := commandConfigStatus(""); got != "unset" {
+		t.Fatalf("commandConfigStatus(\"\") = %q", got)
+	}
+	if got := commandConfigStatus("echo hi"); got != "configured" {
+		t.Fatalf("commandConfigStatus configured = %q", got)
+	}
+}
+
+func TestParseDaemonInterval(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		input   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{input: "30", want: 30 * time.Second},
+		{input: "45s", want: 45 * time.Second},
+		{input: "2m", want: 2 * time.Minute},
+		{input: "0", wantErr: true},
+		{input: "bad", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.input, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseDaemonInterval(tc.input)
+			if tc.wantErr && err == nil {
+				t.Fatalf("parseDaemonInterval(%q) expected error", tc.input)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("parseDaemonInterval(%q) unexpected error: %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Fatalf("parseDaemonInterval(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseTDListIssuesJSON(t *testing.T) {
+	t.Parallel()
+
+	raw := `[
+  {"id":"td-a1","status":"in_progress"},
+  {"id":"td-b2","status":"in_review"}
+]`
+	issues, err := parseTDListIssuesJSON(raw)
+	if err != nil {
+		t.Fatalf("parseTDListIssuesJSON error: %v", err)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("expected 2 issues, got %d", len(issues))
+	}
+	if issues[0].ID != "td-a1" || issues[1].Status != "in_review" {
+		t.Fatalf("unexpected issues payload: %#v", issues)
+	}
+}
+
+func TestFirstMatchingIssueID(t *testing.T) {
+	t.Parallel()
+
+	issues := []tdListIssue{
+		{ID: "work-a1", Status: "in_progress"},
+		{ID: "work-b2", Status: "in_review"},
+	}
+	if got := firstMatchingIssueID(issues, "work", "in_progress"); got != "work-a1" {
+		t.Fatalf("firstMatchingIssueID in_progress = %q", got)
+	}
+	if got := firstMatchingIssueID(issues, "work", "in_review"); got != "work-b2" {
+		t.Fatalf("firstMatchingIssueID in_review = %q", got)
+	}
+	if got := firstMatchingIssueID(issues, "td", "in_progress"); got != "" {
+		t.Fatalf("firstMatchingIssueID mismatched prefix = %q", got)
+	}
+}
+
+func TestParseIssueStatusJSON(t *testing.T) {
+	t.Parallel()
+
+	if got, err := parseIssueStatusJSON(`{"id":"td-a1","status":"in_review"}`); err != nil || got != "in_review" {
+		t.Fatalf("parseIssueStatusJSON valid = (%q, %v)", got, err)
+	}
+	if _, err := parseIssueStatusJSON(`{"id":"td-a1"}`); err == nil {
+		t.Fatalf("parseIssueStatusJSON missing status expected error")
+	}
+}
+
+func TestParseFocusedIssueID(t *testing.T) {
+	t.Parallel()
+
+	currentOutput := `SESSION: ses_123
+FOCUSED: work-a1 Implement daemon
+REVIEWS (1): work-b2 In review
+`
+	if got := parseFocusedIssueID(currentOutput, "work"); got != "work-a1" {
+		t.Fatalf("parseFocusedIssueID = %q, want work-a1", got)
+	}
+	if got := parseFocusedIssueID("No active work", "work"); got != "" {
+		t.Fatalf("parseFocusedIssueID without focused = %q, want empty", got)
+	}
+}
+
 func TestRunStatusHelp(t *testing.T) {
 	t.Parallel()
 
@@ -260,5 +372,21 @@ func TestCmdHelpStatusTopic(t *testing.T) {
 
 	if err := cmdHelp([]string{"status"}); err != nil {
 		t.Fatalf("cmdHelp status: %v", err)
+	}
+}
+
+func TestRunDaemonHelp(t *testing.T) {
+	t.Parallel()
+
+	if err := run([]string{"daemon", "--help"}); err != nil {
+		t.Fatalf("run daemon help: %v", err)
+	}
+}
+
+func TestCmdHelpDaemonTopic(t *testing.T) {
+	t.Parallel()
+
+	if err := cmdHelp([]string{"daemon"}); err != nil {
+		t.Fatalf("cmdHelp daemon: %v", err)
 	}
 }

@@ -24,6 +24,23 @@ Notes:
 - `<issue-id>` should match your configured prefix in `YOKE_TD_PREFIX` (default `td`).
 - Prefer yoke commands over direct td/git operations for core lifecycle transitions.
 
+## Automatic daemon loop
+
+Use this when you want continuous `code -> review -> code` automation:
+
+1. Set `.yoke/config.sh`:
+   - `YOKE_WRITER_CMD=...`
+   - `YOKE_REVIEW_CMD=...`
+2. Start loop:
+   - `yoke daemon`
+3. For dry runs or CI smoke tests:
+   - `yoke daemon --once`
+
+Daemon role command contract:
+- Writer command must transition state out of `in_progress` (usually via `yoke submit`).
+- Reviewer command must transition state out of `in_review` (via `yoke review --approve` or `--reject`).
+- `ISSUE_ID`, `ROOT_DIR`, `TD_PREFIX`, and `YOKE_ROLE` are exported to both commands.
+
 ## Writer agent runbook
 
 Objective:

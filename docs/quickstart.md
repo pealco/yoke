@@ -83,6 +83,22 @@ Expected checks:
 
 Use this before `claim`, `submit`, or `review` to verify branch, configured agents, and `td` focus/next context.
 
+### Configure daemon commands (optional but recommended)
+
+Set writer/reviewer commands in `.yoke/config.sh`:
+
+```bash
+YOKE_WRITER_CMD='codex exec "Implement $ISSUE_ID, commit, then run yoke submit $ISSUE_ID --done \"...\" --remaining \"...\""'
+YOKE_REVIEW_CMD='codex exec "Review $ISSUE_ID and run yoke review $ISSUE_ID --approve or --reject with reason"'
+```
+
+Then run:
+
+```bash
+./bin/yoke daemon --once
+# remove --once for continuous loop mode
+```
+
 ### Claim
 
 ```bash
@@ -133,6 +149,8 @@ Optional automation hook:
 `--agent` executes `YOKE_REVIEW_CMD` with:
 - `ISSUE_ID`
 - `ROOT_DIR`
+- `TD_PREFIX`
+- `YOKE_ROLE=reviewer`
 
 ## 6. Use command help aggressively
 

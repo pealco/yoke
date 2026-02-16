@@ -14,6 +14,7 @@ yoke help <command>
 - `yoke init`
 - `yoke doctor`
 - `yoke status`
+- `yoke daemon`
 - `yoke claim`
 - `yoke submit`
 - `yoke review`
@@ -71,6 +72,7 @@ Checks:
 - config file presence
 - configured td prefix
 - writer/reviewer agent availability status
+- writer/reviewer daemon command status
 
 Exit codes:
 - `0` on success
@@ -98,6 +100,7 @@ Output includes:
 - current git branch
 - configured td prefix
 - configured writer/reviewer agents and availability state
+- configured writer/reviewer command readiness
 - td focused issue (`td current`)
 - td next issue (`td next`)
 - basic tool availability (`git`, `td`, `gh`)
@@ -110,6 +113,45 @@ Example:
 
 ```bash
 yoke status
+```
+
+## `yoke daemon`
+
+Usage:
+
+```bash
+yoke daemon [--once] [--interval VALUE] [--max-iterations N] [--writer-cmd CMD] [--reviewer-cmd CMD]
+```
+
+Purpose:
+- run an automatic writer/reviewer loop against `td` issue states
+
+Loop priority:
+1. run reviewer command for first `td reviewable` issue
+2. otherwise run writer command for focused/in-progress issue
+3. otherwise claim next issue from `td next`
+4. otherwise idle
+
+Required config:
+- `YOKE_WRITER_CMD` (unless `--writer-cmd` provided)
+- `YOKE_REVIEW_CMD` (unless `--reviewer-cmd` provided)
+
+Execution contract:
+- both commands execute via `bash -lc`
+- both receive env vars:
+  - `ISSUE_ID`
+  - `ROOT_DIR`
+  - `TD_PREFIX`
+  - `YOKE_ROLE`
+- command must advance issue status; if status is unchanged, daemon exits with an error to prevent infinite loops
+
+Examples:
+
+```bash
+yoke daemon --once
+yoke daemon --interval 30s
+yoke daemon --max-iterations 20
+yoke daemon --writer-cmd 'echo custom writer' --reviewer-cmd 'echo custom reviewer'
 ```
 
 ## `yoke claim`
@@ -205,7 +247,7 @@ Behavior:
    - first issue parsed from `td reviewable`
 2. optional `--agent`:
    - runs shell command from `YOKE_REVIEW_CMD`
-   - exports `ISSUE_ID` and `ROOT_DIR`
+   - exports `ISSUE_ID`, `ROOT_DIR`, `TD_PREFIX`, and `YOKE_ROLE=reviewer`
 3. optional `--note`:
    - `td comment <issue> <note>`
 4. decision:

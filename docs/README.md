@@ -17,10 +17,10 @@ This documentation is designed for both human operators and LLM coding agents.
 - deterministic command interfaces
 - explicit task state transitions
 - explicit quality gates before review handoff
+- optional automatic writer/reviewer loop via `yoke daemon`
 - rich `--help` output for each command
 
 `yoke` does not currently guarantee:
-- automatic invocation of writer agents
 - automatic merge operations
 - full CI/CD orchestration
 

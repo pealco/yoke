@@ -11,12 +11,13 @@ This document explains yoke’s execution model and internal command flow.
 
 ## System model
 
-`yoke` coordinates four systems:
+`yoke` coordinates five systems:
 
 1. `td` for task lifecycle
 2. `git` for branch isolation
 3. `gh` for PR boundary (optional)
 4. local check command for quality gate
+5. optional writer/reviewer shell commands for daemon automation
 
 ## Lifecycle mapping
 
@@ -29,6 +30,7 @@ open -> in_progress -> in_review -> approved/rejected -> closed/rework
 Command mapping:
 
 - `yoke status` -> read-only snapshot (`git rev-parse`, `td current`, `td next`)
+- `yoke daemon` -> loop (`td reviewable` -> `td in_progress` -> `td next`)
 - `yoke claim` -> `td start`
 - `yoke submit` -> `td handoff` + `td review`
 - `yoke review --approve` -> `td approve`
@@ -76,6 +78,16 @@ flowchart TD
 - Prints parseable key/value snapshot fields for agents.
 - Includes current branch, td focus/next, configured agents, and tool availability.
 - Is read-only and safe to run before any lifecycle command.
+
+### `daemon`
+
+- Executes an automatic loop with action priority:
+  1. review first (`td reviewable`)
+  2. write next (focused or `in_progress`)
+  3. claim next open issue (`td next`)
+  4. idle when no actionable issues remain
+- Runs `YOKE_WRITER_CMD` and `YOKE_REVIEW_CMD` with issue context env vars.
+- Verifies each role command advances td state to prevent no-op infinite loops.
 
 ### `claim`
 

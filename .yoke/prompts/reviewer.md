@@ -13,6 +13,6 @@ You are the reviewer agent for issue `${ISSUE_ID}`.
 - Diffs are minimal and coherent.
 
 ## Output
-- If blocking issues exist: reject with one-line reason.
-- If no blocking issues: approve.
-- Include short notes with file references when relevant.
+- If blocking issues exist: run `yoke review ${ISSUE_ID} --reject "<reason>"`.
+- If no blocking issues: run `yoke review ${ISSUE_ID} --approve`.
+- Include short notes with file references when relevant (via `--note` when useful).
