@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -357,6 +358,65 @@ REVIEWS (1): work-b2 In review
 	if got := parseFocusedIssueID("No active work", "work"); got != "" {
 		t.Fatalf("parseFocusedIssueID without focused = %q, want empty", got)
 	}
+}
+
+func TestParseOpenPRFromListJSON(t *testing.T) {
+	t.Parallel()
+
+	number, url, ok := parseOpenPRFromListJSON(`[{"number":42,"url":"https://example.com/pr/42"}]`)
+	if !ok {
+		t.Fatalf("expected PR parse to succeed")
+	}
+	if number != "42" {
+		t.Fatalf("number = %q", number)
+	}
+	if url != "https://example.com/pr/42" {
+		t.Fatalf("url = %q", url)
+	}
+
+	if _, _, ok := parseOpenPRFromListJSON(`[]`); ok {
+		t.Fatalf("expected empty list to return no PR")
+	}
+	if _, _, ok := parseOpenPRFromListJSON(`not-json`); ok {
+		t.Fatalf("expected invalid JSON to return no PR")
+	}
+}
+
+func TestFormatWriterPRComment(t *testing.T) {
+	t.Parallel()
+
+	comment := formatWriterPRComment("td-a1b2", "done text", "remaining text", "decision text", "uncertain text", "make check")
+	if !contains(comment, "## Writer -> Reviewer Handoff") {
+		t.Fatalf("missing handoff heading: %s", comment)
+	}
+	if !contains(comment, "- Issue: `td-a1b2`") {
+		t.Fatalf("missing issue line: %s", comment)
+	}
+	if !contains(comment, "- Checks: `make check` passed") {
+		t.Fatalf("missing checks line: %s", comment)
+	}
+}
+
+func TestFormatReviewerPRComment(t *testing.T) {
+	t.Parallel()
+
+	comment := formatReviewerPRComment("td-a1b2", "reject", "needs tests", "note text", true)
+	if !contains(comment, "## Reviewer Update") {
+		t.Fatalf("missing reviewer heading: %s", comment)
+	}
+	if !contains(comment, "- Decision: reject") {
+		t.Fatalf("missing decision line: %s", comment)
+	}
+	if !contains(comment, "- Reject reason: needs tests") {
+		t.Fatalf("missing reject reason line: %s", comment)
+	}
+	if !contains(comment, "- Reviewer command: executed") {
+		t.Fatalf("missing reviewer command marker: %s", comment)
+	}
+}
+
+func contains(value, substring string) bool {
+	return strings.Contains(value, substring)
 }
 
 func TestRunStatusHelp(t *testing.T) {

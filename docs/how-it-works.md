@@ -103,6 +103,7 @@ flowchart TD
 - Creates `td handoff` payload.
 - Marks task as review-ready (`td review`).
 - Optionally pushes and opens/updates PR path.
+- Posts a writer handoff comment to the branch PR by default.
 
 ### `review`
 
@@ -110,6 +111,7 @@ flowchart TD
 - Optionally runs reviewer command hook (`YOKE_REVIEW_CMD`).
 - Optionally attaches note (`td comment`).
 - Applies final decision (`td approve` or `td reject`).
+- Posts reviewer updates to the branch PR for approve/reject/note actions by default.
 
 ## PR behavior
 
@@ -117,6 +119,10 @@ flowchart TD
 - `gh` exists
 - `origin` remote exists
 - no open PR already exists for current branch
+
+When an open PR exists for the current branch:
+- `yoke submit` posts writer handoff summaries as PR comments.
+- `yoke review` posts reviewer decisions and notes as PR comments.
 
 Otherwise it logs a skip reason and continues.
 

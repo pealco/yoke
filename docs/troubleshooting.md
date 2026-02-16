@@ -121,6 +121,25 @@ git remote -v
 gh pr list --head "$(git rev-parse --abbrev-ref HEAD)" --state open
 ```
 
+## PR comment not posted on submit/review
+
+Possible causes:
+- `--no-pr-comment` flag was used
+- no open PR exists for current branch
+- `gh` is missing or not authenticated
+
+Diagnosis:
+
+```bash
+gh auth status
+gh pr list --head "$(git rev-parse --abbrev-ref HEAD)" --state open
+```
+
+Fixes:
+- rerun without `--no-pr-comment`
+- ensure branch has an open PR
+- authenticate `gh`
+
 ## `doctor failed` but command printed useful diagnostics
 
 `yoke doctor` intentionally returns non-zero when required checks fail.

@@ -806,6 +806,7 @@ func cmdSubmit(args []string) error {
 		checks    string
 		noPush    bool
 		noPR      bool
+		noPRNote  bool
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -845,6 +846,8 @@ func cmdSubmit(args []string) error {
 			noPush = true
 		case "--no-pr":
 			noPR = true
+		case "--no-pr-comment":
+			noPRNote = true
 		case "-h", "--help":
 			printSubmitUsage()
 			return nil
@@ -916,6 +919,9 @@ func cmdSubmit(args []string) error {
 			return err
 		}
 	}
+	if !noPRNote {
+		postSubmitPRComment(issue, doneText, remaining, decision, uncertain, checkCommand)
+	}
 
 	note(fmt.Sprintf("Submitted %s for review.", issue))
 	note(fmt.Sprintf("Reviewer: yoke review %s", issue))
@@ -939,6 +945,7 @@ func cmdReview(args []string) error {
 		rejectReason string
 		noteText     string
 		runAgent     bool
+		noPRNote     bool
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -961,6 +968,8 @@ func cmdReview(args []string) error {
 			noteText = args[i]
 		case "--agent":
 			runAgent = true
+		case "--no-pr-comment":
+			noPRNote = true
 		case "-h", "--help":
 			printReviewUsage()
 			return nil
@@ -1030,6 +1039,9 @@ func cmdReview(args []string) error {
 		note("Next:")
 		note("  yoke review " + issue + " --approve")
 		note("  yoke review " + issue + " --reject \"reason\"")
+	}
+	if !noPRNote && (action != "" || noteText != "") {
+		postReviewPRComment(issue, action, rejectReason, noteText, runAgent)
 	}
 
 	return nil
@@ -1559,15 +1571,8 @@ func createPRIfNeeded(root string, cfg config, issue, title string) error {
 		return errors.New("could not determine current branch")
 	}
 
-	existing := strings.TrimSpace(commandCombinedOutput(
-		"gh", "pr", "list",
-		"--head", branch,
-		"--state", "open",
-		"--json", "number",
-		"--jq", ".[0].number",
-	))
-	if existing != "" && existing != "null" {
-		note(fmt.Sprintf("PR #%s already exists for %s.", existing, branch))
+	if number, _, ok := openPRForBranch(branch); ok {
+		note(fmt.Sprintf("PR #%s already exists for %s.", number, branch))
 		return nil
 	}
 
@@ -1584,6 +1589,136 @@ func createPRIfNeeded(root string, cfg config, issue, title string) error {
 		createArgs = append(createArgs, "--body", "")
 	}
 	return runCommand("gh", createArgs...)
+}
+
+type prListEntry struct {
+	Number int    `json:"number"`
+	URL    string `json:"url"`
+}
+
+func openPRForCurrentBranch() (string, string, bool) {
+	branchOutput, err := commandOutput("git", "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", "", false
+	}
+	branch := strings.TrimSpace(branchOutput)
+	if branch == "" {
+		return "", "", false
+	}
+	return openPRForBranch(branch)
+}
+
+func openPRForBranch(branch string) (string, string, bool) {
+	if strings.TrimSpace(branch) == "" {
+		return "", "", false
+	}
+	if !commandExists("gh") || !hasOriginRemote() {
+		return "", "", false
+	}
+
+	output := strings.TrimSpace(commandCombinedOutput(
+		"gh", "pr", "list",
+		"--head", branch,
+		"--state", "open",
+		"--json", "number,url",
+	))
+	return parseOpenPRFromListJSON(output)
+}
+
+func parseOpenPRFromListJSON(raw string) (string, string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "null" || trimmed == "[]" {
+		return "", "", false
+	}
+
+	var list []prListEntry
+	if err := json.Unmarshal([]byte(trimmed), &list); err != nil {
+		return "", "", false
+	}
+	if len(list) == 0 || list[0].Number <= 0 {
+		return "", "", false
+	}
+	return strconv.Itoa(list[0].Number), strings.TrimSpace(list[0].URL), true
+}
+
+func postSubmitPRComment(issue, doneText, remaining, decision, uncertain, checks string) {
+	number, _, ok := openPRForCurrentBranch()
+	if !ok {
+		note("warning: no open PR found for current branch; skipping writer handoff PR comment")
+		return
+	}
+
+	body := formatWriterPRComment(issue, doneText, remaining, decision, uncertain, checks)
+	if err := runCommand("gh", "pr", "comment", number, "--body", body); err != nil {
+		note("warning: failed to post writer handoff PR comment: " + err.Error())
+		return
+	}
+	note("Posted writer handoff comment to PR #" + number)
+}
+
+func postReviewPRComment(issue, action, rejectReason, noteText string, runAgent bool) {
+	number, _, ok := openPRForCurrentBranch()
+	if !ok {
+		note("warning: no open PR found for current branch; skipping reviewer PR comment")
+		return
+	}
+
+	body := formatReviewerPRComment(issue, action, rejectReason, noteText, runAgent)
+	if err := runCommand("gh", "pr", "comment", number, "--body", body); err != nil {
+		note("warning: failed to post reviewer PR comment: " + err.Error())
+		return
+	}
+	note("Posted reviewer comment to PR #" + number)
+}
+
+func formatWriterPRComment(issue, doneText, remaining, decision, uncertain, checks string) string {
+	lines := []string{
+		"## Writer -> Reviewer Handoff",
+		"",
+		"- Issue: `" + sanitizeCommentLine(issue) + "`",
+		"- Done: " + sanitizeCommentLine(doneText),
+		"- Remaining: " + sanitizeCommentLine(remaining),
+	}
+	if strings.TrimSpace(decision) != "" {
+		lines = append(lines, "- Decision: "+sanitizeCommentLine(decision))
+	}
+	if strings.TrimSpace(uncertain) != "" {
+		lines = append(lines, "- Uncertain: "+sanitizeCommentLine(uncertain))
+	}
+	lines = append(lines, "- Checks: `"+sanitizeCommentLine(checks)+"` passed")
+	lines = append(lines, "")
+	lines = append(lines, "_Posted automatically by `yoke submit`._")
+	return strings.Join(lines, "\n")
+}
+
+func formatReviewerPRComment(issue, action, rejectReason, noteText string, runAgent bool) string {
+	decision := "note"
+	if strings.TrimSpace(action) != "" {
+		decision = strings.TrimSpace(action)
+	}
+
+	lines := []string{
+		"## Reviewer Update",
+		"",
+		"- Issue: `" + sanitizeCommentLine(issue) + "`",
+		"- Decision: " + sanitizeCommentLine(decision),
+	}
+	if decision == "reject" && strings.TrimSpace(rejectReason) != "" {
+		lines = append(lines, "- Reject reason: "+sanitizeCommentLine(rejectReason))
+	}
+	if strings.TrimSpace(noteText) != "" {
+		lines = append(lines, "- Note: "+sanitizeCommentLine(noteText))
+	}
+	if runAgent {
+		lines = append(lines, "- Reviewer command: executed")
+	}
+	lines = append(lines, "")
+	lines = append(lines, "_Posted automatically by `yoke review`._")
+	return strings.Join(lines, "\n")
+}
+
+func sanitizeCommentLine(value string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 }
 
 func hasOriginRemote() bool {
@@ -1798,6 +1933,7 @@ Behavior:
   2) Writes td handoff fields.
   3) Moves issue to review (td review).
   4) Pushes branch and opens draft PR when configured tools are available.
+  5) Posts writer handoff summary comment to the branch PR.
 
 Inputs:
   issue-id    Optional. If omitted, inferred from current branch name using YOKE_TD_PREFIX.
@@ -1810,6 +1946,7 @@ Options:
   --checks CMD         Optional. Override check command/script.
   --no-push            Do not push branch.
   --no-pr              Do not create or update PR.
+  --no-pr-comment      Do not post writer handoff comment to PR.
 
 Examples:
   yoke submit td-a1b2 --done "Added auth flow" --remaining "Add tests"
@@ -1829,6 +1966,7 @@ Behavior:
   - Optional reviewer automation can run before final action.
   - Reviewer automation receives ISSUE_ID, ROOT_DIR, TD_PREFIX, and YOKE_ROLE=reviewer.
   - Approve closes review path; reject returns work to writer path.
+  - Approve/reject/note actions post reviewer update comments to the branch PR.
 
 Inputs:
   issue-id    Optional. Explicit issue id using YOKE_TD_PREFIX.
@@ -1838,6 +1976,7 @@ Options:
   --note TEXT          Add reviewer note to td issue.
   --approve            Approve issue (td approve).
   --reject TEXT        Reject issue with reason (td reject --reason).
+  --no-pr-comment      Do not post reviewer update comment to PR.
 
 Examples:
   yoke review td-a1b2 --agent --approve

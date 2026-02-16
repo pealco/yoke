@@ -203,6 +203,7 @@ Options:
 - `--checks`
 - `--no-push`
 - `--no-pr`
+- `--no-pr-comment`
 
 Purpose:
 - hand off writer output for review while enforcing checks and state transitions
@@ -221,6 +222,7 @@ Behavior:
    - skips PR creation when `gh` missing
    - skips PR creation when `origin` missing
    - skips PR creation when open PR already exists for branch
+7. post writer handoff comment to the branch PR unless `--no-pr-comment`
 
 Examples:
 
@@ -235,7 +237,7 @@ yoke submit td-a1b2 --done "Done" --remaining "None" --checks "go test ./..."
 Usage:
 
 ```bash
-yoke review [<prefix>-issue-id] [--agent] [--note "..."] [--approve | --reject "..."]
+yoke review [<prefix>-issue-id] [--agent] [--note "..."] [--approve | --reject "..."] [--no-pr-comment]
 ```
 
 Purpose:
@@ -254,6 +256,7 @@ Behavior:
    - `--approve` -> `td approve <issue>`
    - `--reject` -> `td reject <issue> --reason ...`
    - no decision -> `td show <issue>` and next-step hints
+5. for approve/reject/note actions, posts reviewer update comment to PR unless `--no-pr-comment`
 
 Failure cases:
 - `td` missing

@@ -131,6 +131,7 @@ Behavior:
 - runs `td review <issue>`
 - pushes branch to `origin` (unless `--no-push`)
 - creates draft PR via `gh` (unless `--no-pr`)
+- posts writer handoff comment to PR (unless `--no-pr-comment`)
 
 ### Review
 
@@ -151,6 +152,8 @@ Optional automation hook:
 - `ROOT_DIR`
 - `TD_PREFIX`
 - `YOKE_ROLE=reviewer`
+
+By default, reviewer actions (`--approve`, `--reject`, `--note`) also post reviewer comments to the branch PR.
 
 ## 6. Use command help aggressively
 

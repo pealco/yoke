@@ -40,11 +40,13 @@ Initialization:
    - Writes `td handoff` fields.
    - Moves issue to `in_review`.
    - Pushes branch and opens draft PR.
+   - Posts writer handoff comment to PR.
 
 4. Review from separate session:
    - `yoke review [td-id] --agent` (optional automated reviewer)
    - `yoke review [td-id] --approve` to close.
    - `yoke review [td-id] --reject "reason"` to send back.
+   - Posts reviewer decision/note comments to PR.
 
 ## Command Reference
 

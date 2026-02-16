@@ -90,6 +90,7 @@ After `submit`, report:
 - branch name
 - checks status
 - whether PR was created or skipped (and why)
+- confirm writer handoff PR comment was posted (or explain skip)
 
 ## Reviewer agent runbook
 
@@ -141,6 +142,7 @@ Always report:
 - decision (`approve` or `reject`)
 - short rationale
 - any required follow-up work
+- confirm reviewer PR comment was posted (or explain skip)
 
 ## Suggested handoff templates
 
