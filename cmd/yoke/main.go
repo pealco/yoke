@@ -1026,10 +1026,24 @@ func cmdReview(args []string) error {
 		if err := runCommand("td", "approve", issue); err != nil {
 			return err
 		}
+		currentStatus, err := issueStatus(issue)
+		if err != nil {
+			return err
+		}
+		if currentStatus != "closed" {
+			return fmt.Errorf("td approve did not close %s (current status: %s)", issue, currentStatus)
+		}
 		note("Approved " + issue)
 	case "reject":
 		if err := runCommand("td", "reject", issue, "--reason", rejectReason); err != nil {
 			return err
+		}
+		currentStatus, err := issueStatus(issue)
+		if err != nil {
+			return err
+		}
+		if currentStatus != "in_progress" {
+			return fmt.Errorf("td reject did not return %s to in_progress (current status: %s)", issue, currentStatus)
 		}
 		note("Rejected " + issue)
 	default:
