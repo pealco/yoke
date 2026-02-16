@@ -141,6 +141,8 @@ Behavior:
 ./bin/yoke review td-a1b2 --reject "Missing timeout handling tests"
 ```
 
+When approval succeeds and the issue PR is draft, `yoke review --approve` marks it ready for review automatically.
+
 Optional automation hook:
 
 ```bash

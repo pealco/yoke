@@ -517,6 +517,9 @@ func cmdDaemon(args []string) error {
 			return nil
 		}
 		if options.MaxIterations > 0 && iteration >= options.MaxIterations {
+			if err := notifyDaemonMaxIterationsReached(cfg.TDPrefix, options.MaxIterations); err != nil {
+				return err
+			}
 			note(fmt.Sprintf("Daemon reached max iterations (%d); exiting.", options.MaxIterations))
 			return nil
 		}
@@ -614,6 +617,52 @@ func runDaemonRoleCommand(role, issue, shellCommand, root, tdPrefix string) erro
 
 	note(fmt.Sprintf("Daemon observed %s status transition: %s -> %s", issue, previousStatus, currentStatus))
 	return nil
+}
+
+func notifyDaemonMaxIterationsReached(prefix string, maxIterations int) error {
+	issue, status, err := unresolvedConsensusIssue(prefix)
+	if err != nil {
+		return err
+	}
+	if issue == "" {
+		return nil
+	}
+
+	note(fmt.Sprintf("warning: max iterations (%d) reached before consensus on %s (status: %s)", maxIterations, issue, status))
+	note("warning: leaving PR in draft/open state for manual intervention")
+
+	number, _, isDraft, ok := openPRForIssue(issue)
+	if !ok {
+		return nil
+	}
+	if !isDraft {
+		note(fmt.Sprintf("warning: PR #%s is already ready (not draft) for %s", number, issue))
+		return nil
+	}
+
+	body := formatDaemonNoConsensusPRComment(issue, status, maxIterations)
+	if err := runCommand("gh", "pr", "comment", number, "--body", body); err != nil {
+		note("warning: failed to post no-consensus PR comment: " + err.Error())
+		return nil
+	}
+	note("Posted no-consensus daemon comment to PR #" + number)
+	return nil
+}
+
+func unresolvedConsensusIssue(prefix string) (string, string, error) {
+	reviewable := firstReviewableIssueID(prefix)
+	if reviewable != "" {
+		return reviewable, "in_review", nil
+	}
+
+	inProgress, err := firstIssueByStatus(prefix, "in_progress")
+	if err != nil {
+		return "", "", err
+	}
+	if inProgress != "" {
+		return inProgress, "in_progress", nil
+	}
+	return "", "", nil
 }
 
 func focusedOrInProgressIssueID(prefix string) (string, error) {
@@ -1032,6 +1081,9 @@ func cmdReview(args []string) error {
 		}
 		if currentStatus != "closed" {
 			return fmt.Errorf("td approve did not close %s (current status: %s)", issue, currentStatus)
+		}
+		if err := ensureIssuePRReady(issue); err != nil {
+			return err
 		}
 		note("Approved " + issue)
 	case "reject":
@@ -1585,7 +1637,7 @@ func createPRIfNeeded(root string, cfg config, issue, title string) error {
 		return errors.New("could not determine current branch")
 	}
 
-	if number, _, ok := openPRForBranch(branch); ok {
+	if number, _, _, ok := openPRForBranch(branch); ok {
 		note(fmt.Sprintf("PR #%s already exists for %s.", number, branch))
 		return nil
 	}
@@ -1606,59 +1658,53 @@ func createPRIfNeeded(root string, cfg config, issue, title string) error {
 }
 
 type prListEntry struct {
-	Number int    `json:"number"`
-	URL    string `json:"url"`
+	Number  int    `json:"number"`
+	URL     string `json:"url"`
+	IsDraft bool   `json:"isDraft"`
 }
 
-func openPRForCurrentBranch() (string, string, bool) {
-	branchOutput, err := commandOutput("git", "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil {
-		return "", "", false
-	}
-	branch := strings.TrimSpace(branchOutput)
-	if branch == "" {
-		return "", "", false
-	}
+func openPRForIssue(issue string) (string, string, bool, bool) {
+	branch := branchForIssue(issue)
 	return openPRForBranch(branch)
 }
 
-func openPRForBranch(branch string) (string, string, bool) {
+func openPRForBranch(branch string) (string, string, bool, bool) {
 	if strings.TrimSpace(branch) == "" {
-		return "", "", false
+		return "", "", false, false
 	}
 	if !commandExists("gh") || !hasOriginRemote() {
-		return "", "", false
+		return "", "", false, false
 	}
 
 	output := strings.TrimSpace(commandCombinedOutput(
 		"gh", "pr", "list",
 		"--head", branch,
 		"--state", "open",
-		"--json", "number,url",
+		"--json", "number,url,isDraft",
 	))
 	return parseOpenPRFromListJSON(output)
 }
 
-func parseOpenPRFromListJSON(raw string) (string, string, bool) {
+func parseOpenPRFromListJSON(raw string) (string, string, bool, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" || trimmed == "null" || trimmed == "[]" {
-		return "", "", false
+		return "", "", false, false
 	}
 
 	var list []prListEntry
 	if err := json.Unmarshal([]byte(trimmed), &list); err != nil {
-		return "", "", false
+		return "", "", false, false
 	}
 	if len(list) == 0 || list[0].Number <= 0 {
-		return "", "", false
+		return "", "", false, false
 	}
-	return strconv.Itoa(list[0].Number), strings.TrimSpace(list[0].URL), true
+	return strconv.Itoa(list[0].Number), strings.TrimSpace(list[0].URL), list[0].IsDraft, true
 }
 
 func postSubmitPRComment(issue, doneText, remaining, decision, uncertain, checks string) {
-	number, _, ok := openPRForCurrentBranch()
+	number, _, _, ok := openPRForIssue(issue)
 	if !ok {
-		note("warning: no open PR found for current branch; skipping writer handoff PR comment")
+		note("warning: no open PR found for issue branch; skipping writer handoff PR comment")
 		return
 	}
 
@@ -1671,9 +1717,9 @@ func postSubmitPRComment(issue, doneText, remaining, decision, uncertain, checks
 }
 
 func postReviewPRComment(issue, action, rejectReason, noteText string, runAgent bool) {
-	number, _, ok := openPRForCurrentBranch()
+	number, _, _, ok := openPRForIssue(issue)
 	if !ok {
-		note("warning: no open PR found for current branch; skipping reviewer PR comment")
+		note("warning: no open PR found for issue branch; skipping reviewer PR comment")
 		return
 	}
 
@@ -1729,6 +1775,37 @@ func formatReviewerPRComment(issue, action, rejectReason, noteText string, runAg
 	lines = append(lines, "")
 	lines = append(lines, "_Posted automatically by `yoke review`._")
 	return strings.Join(lines, "\n")
+}
+
+func formatDaemonNoConsensusPRComment(issue, status string, maxIterations int) string {
+	lines := []string{
+		"## Daemon Notice",
+		"",
+		"- Issue: `" + sanitizeCommentLine(issue) + "`",
+		"- Status: " + sanitizeCommentLine(status),
+		"- Outcome: max daemon iterations reached without writer/reviewer consensus",
+		"- Iterations: " + strconv.Itoa(maxIterations),
+		"- PR state: left in draft for manual intervention",
+		"",
+		"_Posted automatically by `yoke daemon`._",
+	}
+	return strings.Join(lines, "\n")
+}
+
+func ensureIssuePRReady(issue string) error {
+	number, _, isDraft, ok := openPRForIssue(issue)
+	if !ok {
+		note("warning: no open PR found for issue branch; skipping ready-for-review transition")
+		return nil
+	}
+	if !isDraft {
+		return nil
+	}
+	if err := runCommand("gh", "pr", "ready", number); err != nil {
+		return fmt.Errorf("failed to mark PR #%s ready after approval: %w", number, err)
+	}
+	note("Marked PR #" + number + " ready for review")
+	return nil
 }
 
 func sanitizeCommentLine(value string) string {
@@ -1886,6 +1963,7 @@ Loop priority (each iteration):
   2) Otherwise run writer command on focused/in_progress issue.
   3) Otherwise claim td next issue.
   4) Otherwise idle (sleep and poll again in continuous mode).
+  5) If max iterations are reached without consensus, daemon notifies and leaves PR draft/open.
 
 Command contract:
   - Writer command comes from YOKE_WRITER_CMD (or --writer-cmd override).
@@ -1979,7 +2057,8 @@ Behavior:
   - If issue id omitted, selects first item from td reviewable.
   - Optional reviewer automation can run before final action.
   - Reviewer automation receives ISSUE_ID, ROOT_DIR, TD_PREFIX, and YOKE_ROLE=reviewer.
-  - Approve closes review path; reject returns work to writer path.
+  - Approve closes review path and marks the issue PR ready for review (lifts draft).
+  - Reject returns work to writer path.
   - Approve/reject/note actions post reviewer update comments to the branch PR.
 
 Inputs:

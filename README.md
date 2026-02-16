@@ -13,6 +13,7 @@ It uses:
 - Applies quality gates before review handoff.
 - Creates and updates PR flow with predictable branch naming (`yoke/<td-id>`).
 - Posts writer/reviewer handoff conversation into PR comments by default.
+- Starts PRs as drafts and automatically marks them ready after final approval.
 - Exposes a deterministic `yoke status` snapshot for agent preflight checks.
 - Supports an automatic daemon loop for `code -> review -> code` execution.
 - Provides explicit, agent-oriented `--help` output on every command.

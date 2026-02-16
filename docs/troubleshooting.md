@@ -140,6 +140,25 @@ Fixes:
 - ensure branch has an open PR
 - authenticate `gh`
 
+## PR stayed draft after `yoke review --approve`
+
+Possible causes:
+- no open PR exists for issue branch
+- PR is in another repository context
+- `gh` lacks permission to change PR draft state
+
+Diagnosis:
+
+```bash
+gh pr list --head "yoke/<issue-id>" --state open --json number,isDraft,url
+gh auth status
+```
+
+Fixes:
+- ensure the issue branch has an open PR in the current repo
+- authenticate with an account that can update PR state
+- rerun `yoke review <issue-id> --approve`
+
 ## `doctor failed` but command printed useful diagnostics
 
 `yoke doctor` intentionally returns non-zero when required checks fail.

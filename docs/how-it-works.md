@@ -86,6 +86,7 @@ flowchart TD
   2. write next (focused or `in_progress`)
   3. claim next open issue (`td next`)
   4. idle when no actionable issues remain
+- If `--max-iterations` is hit while work is still `in_progress` or `in_review`, emits a no-consensus notification and keeps PR draft/open.
 - Runs `YOKE_WRITER_CMD` and `YOKE_REVIEW_CMD` with issue context env vars.
 - Verifies each role command advances td state to prevent no-op infinite loops.
 
@@ -112,6 +113,7 @@ flowchart TD
 - Optionally attaches note (`td comment`).
 - Applies final decision (`td approve` or `td reject`).
 - Posts reviewer updates to the branch PR for approve/reject/note actions by default.
+- On approve, automatically marks the issue PR ready for review when it is currently draft.
 
 ## PR behavior
 

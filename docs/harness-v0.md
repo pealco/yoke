@@ -47,6 +47,7 @@ Initialization:
    - `yoke review [td-id] --approve` to close.
    - `yoke review [td-id] --reject "reason"` to send back.
    - Posts reviewer decision/note comments to PR.
+   - Approval lifts PR draft status to ready-for-review.
 
 ## Command Reference
 

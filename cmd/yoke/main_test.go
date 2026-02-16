@@ -363,7 +363,7 @@ REVIEWS (1): work-b2 In review
 func TestParseOpenPRFromListJSON(t *testing.T) {
 	t.Parallel()
 
-	number, url, ok := parseOpenPRFromListJSON(`[{"number":42,"url":"https://example.com/pr/42"}]`)
+	number, url, isDraft, ok := parseOpenPRFromListJSON(`[{"number":42,"url":"https://example.com/pr/42","isDraft":true}]`)
 	if !ok {
 		t.Fatalf("expected PR parse to succeed")
 	}
@@ -373,11 +373,14 @@ func TestParseOpenPRFromListJSON(t *testing.T) {
 	if url != "https://example.com/pr/42" {
 		t.Fatalf("url = %q", url)
 	}
+	if !isDraft {
+		t.Fatalf("expected isDraft=true")
+	}
 
-	if _, _, ok := parseOpenPRFromListJSON(`[]`); ok {
+	if _, _, _, ok := parseOpenPRFromListJSON(`[]`); ok {
 		t.Fatalf("expected empty list to return no PR")
 	}
-	if _, _, ok := parseOpenPRFromListJSON(`not-json`); ok {
+	if _, _, _, ok := parseOpenPRFromListJSON(`not-json`); ok {
 		t.Fatalf("expected invalid JSON to return no PR")
 	}
 }
@@ -412,6 +415,18 @@ func TestFormatReviewerPRComment(t *testing.T) {
 	}
 	if !contains(comment, "- Reviewer command: executed") {
 		t.Fatalf("missing reviewer command marker: %s", comment)
+	}
+}
+
+func TestFormatDaemonNoConsensusPRComment(t *testing.T) {
+	t.Parallel()
+
+	comment := formatDaemonNoConsensusPRComment("td-a1b2", "in_review", 10)
+	if !contains(comment, "## Daemon Notice") {
+		t.Fatalf("missing daemon heading: %s", comment)
+	}
+	if !contains(comment, "- PR state: left in draft for manual intervention") {
+		t.Fatalf("missing draft note: %s", comment)
 	}
 }
 

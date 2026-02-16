@@ -131,6 +131,7 @@ Loop priority:
 2. otherwise run writer command for focused/in-progress issue
 3. otherwise claim next issue from `td next`
 4. otherwise idle
+5. if max iterations are reached without consensus, notify and keep PR draft/open
 
 Required config:
 - `YOKE_WRITER_CMD` (unless `--writer-cmd` provided)
@@ -256,7 +257,8 @@ Behavior:
    - `--approve` -> `td approve <issue>`
    - `--reject` -> `td reject <issue> --reason ...`
    - no decision -> `td show <issue>` and next-step hints
-5. for approve/reject/note actions, posts reviewer update comment to PR unless `--no-pr-comment`
+5. `--approve` also marks the issue PR ready for review (draft -> ready) when an open draft PR exists
+6. for approve/reject/note actions, posts reviewer update comment to PR unless `--no-pr-comment`
 
 Failure cases:
 - `td` missing

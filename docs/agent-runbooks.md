@@ -143,6 +143,7 @@ Always report:
 - short rationale
 - any required follow-up work
 - confirm reviewer PR comment was posted (or explain skip)
+- on approve, confirm PR draft status was lifted (or explain why it was skipped)
 
 ## Suggested handoff templates
 
