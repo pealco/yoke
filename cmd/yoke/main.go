@@ -732,6 +732,17 @@ type bdListIssue struct {
 	DependencyType string   `json:"dependency_type"`
 }
 
+type bdDependencyEdge struct {
+	IssueID     string `json:"issue_id"`
+	DependsOnID string `json:"depends_on_id"`
+	Type        string `json:"type"`
+}
+
+type bdIssueWithDependencies struct {
+	ID           string             `json:"id"`
+	Dependencies []bdDependencyEdge `json:"dependencies"`
+}
+
 type bdComment struct {
 	ID        int    `json:"id"`
 	IssueID   string `json:"issue_id"`
@@ -865,9 +876,9 @@ func listChildIssues(parent string) ([]bdListIssue, error) {
 	return parseBDListIssuesJSON(output)
 }
 
-func listIssueDependencies(issueID string) ([]bdListIssue, error) {
+func listIssueDependencyEdges(issueID string) ([]bdDependencyEdge, error) {
 	output := commandCombinedOutput("bd", "dep", "list", issueID, "--json")
-	return parseBDListIssuesJSON(output)
+	return parseBDDependencyEdgesJSON(output)
 }
 
 func listIssueComments(issueID string) ([]bdComment, error) {
@@ -888,11 +899,99 @@ func hasOpenBlockingDependencies(dependencies []bdListIssue) bool {
 }
 
 func issueHasOpenBlockingDependencies(issueID string) (bool, error) {
-	dependencies, err := listIssueDependencies(issueID)
+	dependencyEdges, err := listIssueDependencyEdges(issueID)
 	if err != nil {
 		return false, err
 	}
-	return hasOpenBlockingDependencies(dependencies), nil
+	return hasOpenBlockingDependencyEdges(issueID, dependencyEdges, issueStatus)
+}
+
+func hasOpenBlockingDependencyEdges(issueID string, edges []bdDependencyEdge, statusLookup func(string) (string, error)) (bool, error) {
+	normalizedIssueID := strings.TrimSpace(issueID)
+	statusByIssueID := make(map[string]string)
+	for _, edge := range edges {
+		if !strings.EqualFold(strings.TrimSpace(edge.Type), "blocks") {
+			continue
+		}
+		edgeIssueID := strings.TrimSpace(edge.IssueID)
+		if edgeIssueID != "" && normalizedIssueID != "" && !strings.EqualFold(edgeIssueID, normalizedIssueID) {
+			continue
+		}
+		blockerID := strings.TrimSpace(edge.DependsOnID)
+		if blockerID == "" {
+			continue
+		}
+		status, ok := statusByIssueID[blockerID]
+		if !ok {
+			resolvedStatus, err := statusLookup(blockerID)
+			if err != nil {
+				return false, err
+			}
+			status = resolvedStatus
+			statusByIssueID[blockerID] = status
+		}
+		if status != "closed" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func parseBDDependencyEdgesJSON(raw string) ([]bdDependencyEdge, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "null" {
+		return nil, nil
+	}
+
+	var edgePayload []bdDependencyEdge
+	if err := json.Unmarshal([]byte(trimmed), &edgePayload); err == nil {
+		edges := filterValidDependencyEdges(edgePayload)
+		if len(edges) > 0 {
+			return edges, nil
+		}
+	}
+
+	var issuePayload []bdIssueWithDependencies
+	if err := json.Unmarshal([]byte(trimmed), &issuePayload); err != nil {
+		return nil, fmt.Errorf("parse bd dep list json: %w", err)
+	}
+
+	edges := make([]bdDependencyEdge, 0)
+	for _, issue := range issuePayload {
+		for _, dep := range issue.Dependencies {
+			edge := bdDependencyEdge{
+				IssueID:     strings.TrimSpace(dep.IssueID),
+				DependsOnID: strings.TrimSpace(dep.DependsOnID),
+				Type:        strings.TrimSpace(dep.Type),
+			}
+			if edge.IssueID == "" {
+				edge.IssueID = strings.TrimSpace(issue.ID)
+			}
+			if edge.IssueID == "" || edge.DependsOnID == "" || edge.Type == "" {
+				continue
+			}
+			edges = append(edges, edge)
+		}
+	}
+
+	return edges, nil
+}
+
+func filterValidDependencyEdges(edges []bdDependencyEdge) []bdDependencyEdge {
+	valid := make([]bdDependencyEdge, 0, len(edges))
+	for _, edge := range edges {
+		if strings.TrimSpace(edge.IssueID) == "" {
+			continue
+		}
+		if strings.TrimSpace(edge.DependsOnID) == "" {
+			continue
+		}
+		if strings.TrimSpace(edge.Type) == "" {
+			continue
+		}
+		valid = append(valid, edge)
+	}
+	return valid
 }
 
 func collectDescendantIssues(root string) ([]bdListIssue, error) {
@@ -990,6 +1089,47 @@ func closeClarificationTasksWithComments(rootIssue string) (int, error) {
 	return closed, nil
 }
 
+func collectEpicWorkItemIDs(descendants []bdListIssue) map[string]struct{} {
+	workItemIDs := make(map[string]struct{})
+	for _, issue := range descendants {
+		id := strings.TrimSpace(issue.ID)
+		if id == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(issue.IssueType), "epic") {
+			continue
+		}
+		workItemIDs[id] = struct{}{}
+	}
+	return workItemIDs
+}
+
+func filterClaimCandidatesForEpic(candidates []bdListIssue, workItemIDs map[string]struct{}, hasOpenDeps func(string) (bool, error)) ([]bdListIssue, []string, int, error) {
+	filtered := make([]bdListIssue, 0, len(candidates))
+	skippedBlocked := make([]string, 0)
+	ignoredOutsideEpic := 0
+	for _, candidate := range candidates {
+		id := strings.TrimSpace(candidate.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := workItemIDs[id]; !ok {
+			ignoredOutsideEpic++
+			continue
+		}
+		hasDeps, err := hasOpenDeps(id)
+		if err != nil {
+			return nil, nil, ignoredOutsideEpic, err
+		}
+		if hasDeps {
+			skippedBlocked = append(skippedBlocked, id)
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
+	return filtered, skippedBlocked, ignoredOutsideEpic, nil
+}
+
 func pickEpicChildToClaim(descendants, inProgress, ready []bdListIssue) (string, bool) {
 	workItems := map[string]bdListIssue{}
 	for _, issue := range descendants {
@@ -1066,6 +1206,8 @@ func resolveClaimIssue(root string, cfg config, issue string, passLimit int) (st
 		return "", false, err
 	}
 	claimNote(fmt.Sprintf("Collected %d descendant issue(s).", len(descendants)))
+	workItemIDs := collectEpicWorkItemIDs(descendants)
+	claimNote(fmt.Sprintf("Epic work item candidates: %d", len(workItemIDs)))
 
 	claimNote("Loading in-progress issues for possible resume.")
 	inProgress, err := listIssuesByStatus("in_progress", false)
@@ -1073,22 +1215,12 @@ func resolveClaimIssue(root string, cfg config, issue string, passLimit int) (st
 		return "", false, err
 	}
 	claimNote(fmt.Sprintf("Found %d in-progress issue(s).", len(inProgress)))
-	filteredInProgress := make([]bdListIssue, 0, len(inProgress))
-	skippedInProgress := make([]string, 0)
-	for _, candidate := range inProgress {
-		id := strings.TrimSpace(candidate.ID)
-		if id == "" {
-			continue
-		}
-		hasOpenDeps, err := issueHasOpenBlockingDependencies(id)
-		if err != nil {
-			return "", false, err
-		}
-		if hasOpenDeps {
-			skippedInProgress = append(skippedInProgress, id)
-			continue
-		}
-		filteredInProgress = append(filteredInProgress, candidate)
+	filteredInProgress, skippedInProgress, ignoredInProgress, err := filterClaimCandidatesForEpic(inProgress, workItemIDs, issueHasOpenBlockingDependencies)
+	if err != nil {
+		return "", false, err
+	}
+	if ignoredInProgress > 0 {
+		claimNote(fmt.Sprintf("Ignoring %d in-progress issue(s) outside this epic.", ignoredInProgress))
 	}
 	if len(skippedInProgress) > 0 {
 		claimNote("Skipping blocked in-progress issue(s): " + strings.Join(skippedInProgress, ", "))
@@ -1100,8 +1232,19 @@ func resolveClaimIssue(root string, cfg config, issue string, passLimit int) (st
 		return "", false, err
 	}
 	claimNote(fmt.Sprintf("Found %d ready open issue(s).", len(ready)))
+	filteredReady, skippedReady, ignoredReady, err := filterClaimCandidatesForEpic(ready, workItemIDs, issueHasOpenBlockingDependencies)
+	if err != nil {
+		return "", false, err
+	}
+	if ignoredReady > 0 {
+		claimNote(fmt.Sprintf("Ignoring %d ready issue(s) outside this epic.", ignoredReady))
+	}
+	if len(skippedReady) > 0 {
+		claimNote("Skipping blocked ready issue(s): " + strings.Join(skippedReady, ", "))
+	}
+	claimNote(fmt.Sprintf("Claimable ready open issue(s): %d", len(filteredReady)))
 
-	target, epicComplete := pickEpicChildToClaim(descendants, filteredInProgress, ready)
+	target, epicComplete := pickEpicChildToClaim(descendants, filteredInProgress, filteredReady)
 	if target != "" {
 		claimNote("Selected claimable child task: " + target)
 		return target, false, nil
