@@ -4,6 +4,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,7 +25,16 @@ const (
 	defaultBDPrefix   = "bd"
 	defaultDaemonPoll = 30 * time.Second
 	reviewQueueLabel  = "yoke:in_review"
+	epicPassCount     = 5
+
+	epicImprovementCompleteLabel = "yoke:epic-improvement-complete"
+	epicImprovementRunningLabel  = "yoke:epic-improvement-running"
+	maxSummaryCommentChars       = 12000
+	maxSummaryInputCharsPerPass  = 12000
 )
+
+//go:embed prompts/epic-improvement-cycle.md
+var epicImprovementPromptTemplate string
 
 var (
 	assignPattern = regexp.MustCompile(`^([A-Z0-9_]+)\s*=\s*(.+)$`)
@@ -895,13 +905,19 @@ func pickEpicChildToClaim(descendants, inProgress, ready []bdListIssue) (string,
 	return "", true
 }
 
-func resolveClaimIssue(issue string) (string, bool, error) {
+func resolveClaimIssue(root string, cfg config, issue string) (string, bool, error) {
 	details, err := issueDetails(issue)
 	if err != nil {
 		return "", false, err
 	}
 	if !strings.EqualFold(strings.TrimSpace(details.IssueType), "epic") {
 		return issue, false, nil
+	}
+	if workflowStatusForIssue(details) == "closed" {
+		return "", true, nil
+	}
+	if err := runEpicImprovementCycle(root, cfg, details); err != nil {
+		return "", false, err
 	}
 
 	descendants, err := collectDescendantIssues(issue)
@@ -936,6 +952,260 @@ func resolveClaimIssue(issue string) (string, bool, error) {
 	}
 
 	return "", false, fmt.Errorf("epic %s has no claimable child tasks (all remaining children are blocked or already claimed)", issue)
+}
+
+type epicImprovementPassReport struct {
+	Pass    int
+	Role    string
+	AgentID string
+	Output  string
+}
+
+func runEpicImprovementCycle(root string, cfg config, epic bdListIssue) error {
+	if strings.TrimSpace(epicImprovementPromptTemplate) == "" {
+		return errors.New("epic improvement prompt template is empty")
+	}
+	if hasLabel(epic.Labels, epicImprovementCompleteLabel) {
+		return nil
+	}
+
+	reportsDir := filepath.Join(root, ".yoke", "epic-improvement-reports", sanitizePathSegment(epic.ID))
+	if err := os.MkdirAll(reportsDir, 0o755); err != nil {
+		return err
+	}
+	if err := runCommand("bd", "update", epic.ID, "--add-label", epicImprovementRunningLabel); err != nil {
+		return err
+	}
+
+	reports := make([]epicImprovementPassReport, 0, epicPassCount)
+	for pass := 1; pass <= epicPassCount; pass++ {
+		role := roleForPass(pass)
+		agentID, err := agentIDForRole(cfg, role)
+		if err != nil {
+			return err
+		}
+
+		prompt := buildEpicImprovementPassPrompt(epic.ID, pass, epicPassCount, role)
+		output, runErr := runAgentPrompt(agentID, root, prompt, []string{
+			"ISSUE_ID=" + epic.ID,
+			"ROOT_DIR=" + root,
+			"BD_PREFIX=" + cfg.BDPrefix,
+			"YOKE_ROLE=" + role,
+			"YOKE_EPIC_IMPROVEMENT_PASS=" + strconv.Itoa(pass),
+		})
+
+		reportPath := filepath.Join(reportsDir, fmt.Sprintf("pass-%02d-%s.md", pass, role))
+		if err := writeEpicImprovementPassReport(reportPath, epic.ID, pass, role, agentID, output, runErr); err != nil {
+			return err
+		}
+		if runErr != nil {
+			return fmt.Errorf("epic improvement pass %d (%s) failed: %w (report: %s)", pass, role, runErr, reportPath)
+		}
+
+		reports = append(reports, epicImprovementPassReport{
+			Pass:    pass,
+			Role:    role,
+			AgentID: agentID,
+			Output:  output,
+		})
+	}
+
+	summaryAgentID, err := agentIDForRole(cfg, "reviewer")
+	if err != nil {
+		return err
+	}
+	summaryPrompt := buildEpicImprovementSummaryPrompt(epic, reports)
+	summary, runErr := runAgentPrompt(summaryAgentID, root, summaryPrompt, []string{
+		"ISSUE_ID=" + epic.ID,
+		"ROOT_DIR=" + root,
+		"BD_PREFIX=" + cfg.BDPrefix,
+		"YOKE_ROLE=reviewer",
+		"YOKE_EPIC_IMPROVEMENT_SUMMARY=1",
+	})
+	summaryPath := filepath.Join(reportsDir, "summary.md")
+	if err := writeEpicImprovementSummary(summaryPath, epic.ID, summaryAgentID, summary, runErr); err != nil {
+		return err
+	}
+	if runErr != nil {
+		return fmt.Errorf("epic improvement summary failed: %w (report: %s)", runErr, summaryPath)
+	}
+
+	comment := formatEpicImprovementSummaryComment(epic, summary, reportsDir)
+	if err := runCommand("bd", "comments", "add", epic.ID, comment); err != nil {
+		return err
+	}
+	if err := runCommand("bd", "update", epic.ID,
+		"--add-label", epicImprovementCompleteLabel,
+		"--remove-label", epicImprovementRunningLabel,
+	); err != nil {
+		return err
+	}
+
+	note(fmt.Sprintf("Completed epic improvement cycle for %s; reports saved in %s", epic.ID, reportsDir))
+	return nil
+}
+
+func roleForPass(pass int) string {
+	if pass%2 == 1 {
+		return "writer"
+	}
+	return "reviewer"
+}
+
+func agentIDForRole(cfg config, role string) (string, error) {
+	switch role {
+	case "writer":
+		if strings.TrimSpace(cfg.WriterAgent) != "" {
+			return cfg.WriterAgent, nil
+		}
+	case "reviewer":
+		if strings.TrimSpace(cfg.ReviewerAgent) != "" {
+			return cfg.ReviewerAgent, nil
+		}
+		if strings.TrimSpace(cfg.WriterAgent) != "" {
+			return cfg.WriterAgent, nil
+		}
+	}
+	return "", fmt.Errorf("no %s agent configured; run yoke init or set agent config in .yoke/config.sh", role)
+}
+
+func agentBinaryForID(agentID string) (string, string, error) {
+	normalized, ok := normalizeAgentID(agentID)
+	if !ok {
+		return "", "", fmt.Errorf("unsupported agent id: %s", agentID)
+	}
+	for _, spec := range supportedAgents {
+		if spec.ID != normalized {
+			continue
+		}
+		for _, binary := range spec.Binaries {
+			if commandExists(binary) {
+				return normalized, binary, nil
+			}
+		}
+		break
+	}
+	return "", "", fmt.Errorf("agent %s is not available on PATH", normalized)
+}
+
+func runAgentPrompt(agentID, root, prompt string, extraEnv []string) (string, error) {
+	normalized, binary, err := agentBinaryForID(agentID)
+	if err != nil {
+		return "", err
+	}
+
+	var cmd *exec.Cmd
+	switch normalized {
+	case "codex":
+		cmd = exec.Command(binary, "exec", "--full-auto", "--cd", root, prompt)
+	case "claude":
+		cmd = exec.Command(binary, "--print", "--permission-mode", "bypassPermissions", prompt)
+	default:
+		return "", fmt.Errorf("unsupported agent id: %s", normalized)
+	}
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), extraEnv...)
+	output, runErr := cmd.CombinedOutput()
+	return strings.TrimSpace(string(output)), runErr
+}
+
+func buildEpicImprovementPassPrompt(epicID string, pass, total int, role string) string {
+	replaced := strings.ReplaceAll(epicImprovementPromptTemplate, "$EPIC_ID", epicID)
+	return strings.TrimSpace(fmt.Sprintf(
+		`You are the %s agent for epic %s.
+This is epic improvement pass %d of %d.
+Apply the following improvement protocol exactly and emit the report in the specified report format:
+
+%s`,
+		role, epicID, pass, total, replaced,
+	))
+}
+
+func buildEpicImprovementSummaryPrompt(epic bdListIssue, reports []epicImprovementPassReport) string {
+	var body strings.Builder
+	body.WriteString(fmt.Sprintf("Epic: %s\n", epic.ID))
+	body.WriteString(fmt.Sprintf("Title: %s\n\n", strings.TrimSpace(epic.Title)))
+	body.WriteString("Summarize the five pass reports below into one concise final report.\n")
+	body.WriteString("Use sections:\n")
+	body.WriteString("1) Improvements made\n")
+	body.WriteString("2) Remaining risks/questions\n")
+	body.WriteString("3) Most critical dependency chains\n")
+	body.WriteString("4) Recommended next implementation steps\n\n")
+
+	for _, report := range reports {
+		body.WriteString(fmt.Sprintf("## Pass %d (%s via %s)\n", report.Pass, report.Role, report.AgentID))
+		body.WriteString(truncateForPrompt(report.Output, maxSummaryInputCharsPerPass))
+		body.WriteString("\n\n")
+	}
+	return body.String()
+}
+
+func truncateForPrompt(value string, maxChars int) string {
+	trimmed := strings.TrimSpace(value)
+	if maxChars <= 0 || len(trimmed) <= maxChars {
+		return trimmed
+	}
+	return trimmed[:maxChars] + "\n...[truncated]..."
+}
+
+func writeEpicImprovementPassReport(path, epicID string, pass int, role, agentID, output string, runErr error) error {
+	var body strings.Builder
+	body.WriteString(fmt.Sprintf("# Epic Improvement Pass %d\n\n", pass))
+	body.WriteString(fmt.Sprintf("- Epic: `%s`\n", epicID))
+	body.WriteString(fmt.Sprintf("- Role: `%s`\n", role))
+	body.WriteString(fmt.Sprintf("- Agent: `%s`\n", agentID))
+	body.WriteString(fmt.Sprintf("- Timestamp: `%s`\n", time.Now().Format(time.RFC3339)))
+	if runErr != nil {
+		body.WriteString(fmt.Sprintf("- Exit: error (`%s`)\n", runErr))
+	} else {
+		body.WriteString("- Exit: success\n")
+	}
+	body.WriteString("\n## Output\n\n")
+	body.WriteString(output)
+	body.WriteString("\n")
+	return os.WriteFile(path, []byte(body.String()), 0o644)
+}
+
+func writeEpicImprovementSummary(path, epicID, agentID, summary string, runErr error) error {
+	var body strings.Builder
+	body.WriteString("# Epic Improvement Summary\n\n")
+	body.WriteString(fmt.Sprintf("- Epic: `%s`\n", epicID))
+	body.WriteString(fmt.Sprintf("- Agent: `%s`\n", agentID))
+	body.WriteString(fmt.Sprintf("- Timestamp: `%s`\n", time.Now().Format(time.RFC3339)))
+	if runErr != nil {
+		body.WriteString(fmt.Sprintf("- Exit: error (`%s`)\n", runErr))
+	} else {
+		body.WriteString("- Exit: success\n")
+	}
+	body.WriteString("\n## Output\n\n")
+	body.WriteString(summary)
+	body.WriteString("\n")
+	return os.WriteFile(path, []byte(body.String()), 0o644)
+}
+
+func formatEpicImprovementSummaryComment(epic bdListIssue, summary, reportsDir string) string {
+	trimmedSummary := truncateForPrompt(summary, maxSummaryCommentChars)
+	lines := []string{
+		"## Epic Improvement Cycle Complete",
+		"",
+		"- Epic: `" + sanitizeCommentLine(epic.ID) + "`",
+		"- Passes: " + strconv.Itoa(epicPassCount),
+		"- Process: writer/reviewer alternating",
+		"",
+		"### Agent Summary",
+		trimmedSummary,
+		"",
+		"_Local reports saved at: `" + sanitizeCommentLine(reportsDir) + "`_",
+	}
+	return strings.Join(lines, "\n")
+}
+
+func sanitizePathSegment(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "unknown"
+	}
+	return strings.NewReplacer("/", "_", "\\", "_", " ", "_", ":", "_").Replace(trimmed)
 }
 
 func workflowStatusForIssue(issue bdListIssue) string {
@@ -992,7 +1262,7 @@ func cmdClaim(args []string) error {
 	}
 
 	requestedIssue := issue
-	resolvedIssue, epicCompleted, err := resolveClaimIssue(issue)
+	resolvedIssue, epicCompleted, err := resolveClaimIssue(root, cfg, issue)
 	if err != nil {
 		return err
 	}
@@ -2205,6 +2475,8 @@ Purpose:
 
 Behavior:
   - If issue id omitted, picks first issue from bd open+ready list.
+  - If issue id is an epic, runs a 5-pass epic improvement cycle (writer/reviewer alternating) before task claim.
+  - Epic improvement reports are saved in .yoke/epic-improvement-reports/<epic-id>/.
   - If issue id is an epic, claims the next ready/in-progress child task in that epic.
   - If an epic has no remaining open child tasks, yoke closes the epic and exits.
   - Runs bd update <issue> --status in_progress.

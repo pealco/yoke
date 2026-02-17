@@ -107,6 +107,8 @@ Then run:
 
 Behavior:
 - picks issue from `bd list --status open --ready` (if not provided)
+- if the issue is an epic, runs a five-pass improvement cycle with alternating writer/reviewer agents
+- records pass reports and summary in `.yoke/epic-improvement-reports/<epic-id>/`
 - if the issue is an epic, resolves to the next child task (`in_progress` first, then ready open child)
 - if epic child tasks are all closed, closes the epic and exits
 - runs `bd update <issue> --status in_progress`

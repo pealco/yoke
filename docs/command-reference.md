@@ -171,6 +171,9 @@ Behavior:
    - explicit argument, or
    - first issue from `bd list --status open --ready`
 2. if selected issue is an epic:
+   - runs a 5-pass epic improvement cycle (writer/reviewer alternating) using the configured agents
+   - writes pass reports and summary to `.yoke/epic-improvement-reports/<epic-id>/`
+   - posts an agent-generated summary comment to the epic
    - traverses epic descendants
    - prefers an `in_progress` child task if present
    - otherwise picks first ready open child task
@@ -182,6 +185,7 @@ Failure cases:
 - `bd` missing
 - no claimable issue when omitted
 - explicit epic has no claimable child task (all remaining children blocked or already claimed)
+- claiming an epic without available configured writer/reviewer agents
 - git branch switch failure
 
 Examples:

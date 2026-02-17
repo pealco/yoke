@@ -93,6 +93,9 @@ flowchart TD
 ### `claim`
 
 - Resolves target issue (explicit or first `bd list --status open --ready`) using `YOKE_BD_PREFIX`.
+- If target is an epic, runs a five-pass improvement cycle with alternating writer/reviewer agents.
+- Stores each pass report and final summary under `.yoke/epic-improvement-reports/<epic-id>/`.
+- Posts an agent-generated summary comment back to the epic.
 - If target is an epic, resolves claim target to an epic child task:
   - prefers an existing `in_progress` child task
   - otherwise selects a ready open child task

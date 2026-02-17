@@ -500,6 +500,44 @@ func TestPickEpicChildToClaimBlocked(t *testing.T) {
 	}
 }
 
+func TestRoleForPass(t *testing.T) {
+	t.Parallel()
+
+	if got := roleForPass(1); got != "writer" {
+		t.Fatalf("roleForPass(1) = %q", got)
+	}
+	if got := roleForPass(2); got != "reviewer" {
+		t.Fatalf("roleForPass(2) = %q", got)
+	}
+	if got := roleForPass(5); got != "writer" {
+		t.Fatalf("roleForPass(5) = %q", got)
+	}
+}
+
+func TestBuildEpicImprovementPassPrompt(t *testing.T) {
+	t.Parallel()
+
+	prompt := buildEpicImprovementPassPrompt("bd-a1b2", 3, 5, "writer")
+	if !contains(prompt, "pass 3 of 5") {
+		t.Fatalf("expected pass metadata in prompt: %s", prompt)
+	}
+	if !contains(prompt, "bd show bd-a1b2") {
+		t.Fatalf("expected epic id replacement in prompt: %s", prompt)
+	}
+}
+
+func TestTruncateForPrompt(t *testing.T) {
+	t.Parallel()
+
+	if got := truncateForPrompt("abc", 10); got != "abc" {
+		t.Fatalf("truncateForPrompt no-op = %q", got)
+	}
+	got := truncateForPrompt("abcdefghijklmnopqrstuvwxyz", 8)
+	if !contains(got, "...[truncated]...") {
+		t.Fatalf("expected truncation marker, got %q", got)
+	}
+}
+
 func contains(value, substring string) bool {
 	return strings.Contains(value, substring)
 }
