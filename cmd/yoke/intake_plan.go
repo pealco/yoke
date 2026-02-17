@@ -1,11 +1,18 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 )
+
+const splitOversizedWorkConstraint = "Split oversized work into smaller tasks instead of targeting fixed task-count bounds."
+
+//go:embed prompts/intake-plan.md
+var intakePlanPromptTemplate string
 
 type intakePlan struct {
 	Epic  intakePlanEpic   `json:"epic"`
@@ -32,6 +39,59 @@ type intakePlanValidationError struct {
 
 func (e *intakePlanValidationError) Error() string {
 	return fmt.Sprintf("intake plan validation failed at %s: %s", e.Path, e.Reason)
+}
+
+func buildIntakePlanPrompt(idea string, constraints []string) (string, error) {
+	if strings.TrimSpace(intakePlanPromptTemplate) == "" {
+		return "", errors.New("intake plan prompt template is empty")
+	}
+
+	trimmedIdea := strings.TrimSpace(idea)
+	if trimmedIdea == "" {
+		return "", errors.New("idea text is required")
+	}
+
+	prompt := strings.ReplaceAll(intakePlanPromptTemplate, "{{IDEA_TEXT}}", trimmedIdea)
+	prompt = strings.ReplaceAll(prompt, "{{GENERATION_CONSTRAINTS}}", formatIntakePlanConstraints(constraints))
+	return prompt, nil
+}
+
+func formatIntakePlanConstraints(constraints []string) string {
+	combined := make([]string, 0, len(constraints)+1)
+	combined = append(combined, splitOversizedWorkConstraint)
+	for _, constraint := range constraints {
+		trimmed := strings.TrimSpace(constraint)
+		if trimmed == "" {
+			continue
+		}
+		combined = append(combined, trimmed)
+	}
+
+	lines := make([]string, 0, len(combined))
+	for _, constraint := range combined {
+		lines = append(lines, "- "+constraint)
+	}
+	return strings.Join(lines, "\n")
+}
+
+type intakePlanGenerator func(prompt string) (string, error)
+
+func generateIntakePlan(idea string, constraints []string, generator intakePlanGenerator) (intakePlan, error) {
+	if generator == nil {
+		return intakePlan{}, errors.New("intake plan generator is required")
+	}
+
+	prompt, err := buildIntakePlanPrompt(idea, constraints)
+	if err != nil {
+		return intakePlan{}, err
+	}
+
+	raw, err := generator(prompt)
+	if err != nil {
+		return intakePlan{}, fmt.Errorf("generate intake plan: %w", err)
+	}
+
+	return parseGeneratedIntakePlan(raw)
 }
 
 func parseGeneratedIntakePlan(raw string) (intakePlan, error) {
