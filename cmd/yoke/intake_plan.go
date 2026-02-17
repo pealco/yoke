@@ -98,14 +98,6 @@ func validateIntakePlan(plan intakePlan) error {
 				)
 			}
 		}
-		for j, depRef := range task.LocalDependencyRefs {
-			if strings.TrimSpace(depRef) == "" {
-				return newIntakePlanValidationError(
-					fmt.Sprintf("%s.local_dependency_refs[%d]", taskPath, j),
-					"must be non-empty",
-				)
-			}
-		}
 	}
 
 	return nil

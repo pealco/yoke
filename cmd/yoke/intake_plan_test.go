@@ -115,6 +115,31 @@ func TestValidateIntakePlanRejectsMissingOrEmptyEpicFields(t *testing.T) {
 			path:   "epic.description",
 			reason: "must be non-empty",
 		},
+		{
+			name: "missing epic priority",
+			plan: intakePlan{
+				Epic: intakePlanEpic{
+					Title:       "Epic title",
+					Description: "Epic description",
+				},
+				Tasks: []intakePlanTask{validTask()},
+			},
+			path:   "epic.priority",
+			reason: "must be non-empty",
+		},
+		{
+			name: "empty epic priority",
+			plan: intakePlan{
+				Epic: intakePlanEpic{
+					Title:       "Epic title",
+					Description: "Epic description",
+					Priority:    "  ",
+				},
+				Tasks: []intakePlanTask{validTask()},
+			},
+			path:   "epic.priority",
+			reason: "must be non-empty",
+		},
 	}
 
 	for _, tc := range cases {
@@ -159,6 +184,70 @@ func TestValidateIntakePlanRejectsMissingOrEmptyTaskList(t *testing.T) {
 			}
 			err := validateIntakePlan(plan)
 			assertPlanValidationError(t, err, "tasks", tc.reason)
+		})
+	}
+}
+
+func TestValidateIntakePlanRejectsMissingOrEmptyTaskFields(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		task   intakePlanTask
+		path   string
+		reason string
+	}{
+		{
+			name: "missing task title",
+			task: intakePlanTask{
+				Description:        "Task description",
+				AcceptanceCriteria: []string{"One criterion"},
+			},
+			path:   "tasks[0].title",
+			reason: "must be non-empty",
+		},
+		{
+			name: "empty task title",
+			task: intakePlanTask{
+				Title:              "   ",
+				Description:        "Task description",
+				AcceptanceCriteria: []string{"One criterion"},
+			},
+			path:   "tasks[0].title",
+			reason: "must be non-empty",
+		},
+		{
+			name: "missing task description",
+			task: intakePlanTask{
+				Title:              "Task title",
+				AcceptanceCriteria: []string{"One criterion"},
+			},
+			path:   "tasks[0].description",
+			reason: "must be non-empty",
+		},
+		{
+			name: "empty task description",
+			task: intakePlanTask{
+				Title:              "Task title",
+				Description:        "   ",
+				AcceptanceCriteria: []string{"One criterion"},
+			},
+			path:   "tasks[0].description",
+			reason: "must be non-empty",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			plan := intakePlan{
+				Epic:  validEpic(),
+				Tasks: []intakePlanTask{tc.task},
+			}
+			err := validateIntakePlan(plan)
+			assertPlanValidationError(t, err, tc.path, tc.reason)
 		})
 	}
 }
