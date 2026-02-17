@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -1014,7 +1015,7 @@ func runEpicImprovementCycle(root string, cfg config, epic bdListIssue) error {
 			"BD_PREFIX=" + cfg.BDPrefix,
 			"YOKE_ROLE=" + role,
 			"YOKE_EPIC_IMPROVEMENT_PASS=" + strconv.Itoa(pass),
-		})
+		}, fmt.Sprintf("[claim][pass %d/%d %s] ", pass, epicPassCount, role))
 
 		reportPath := filepath.Join(reportsDir, fmt.Sprintf("pass-%02d-%s.md", pass, role))
 		if err := writeEpicImprovementPassReport(reportPath, epic.ID, pass, role, agentID, output, runErr); err != nil {
@@ -1047,7 +1048,7 @@ func runEpicImprovementCycle(root string, cfg config, epic bdListIssue) error {
 		"BD_PREFIX=" + cfg.BDPrefix,
 		"YOKE_ROLE=reviewer",
 		"YOKE_EPIC_IMPROVEMENT_SUMMARY=1",
-	})
+	}, "[claim][summary] ")
 	summaryPath := filepath.Join(reportsDir, "summary.md")
 	if err := writeEpicImprovementSummary(summaryPath, epic.ID, summaryAgentID, summary, runErr); err != nil {
 		return err
@@ -1118,7 +1119,7 @@ func agentBinaryForID(agentID string) (string, string, error) {
 	return "", "", fmt.Errorf("agent %s is not available on PATH", normalized)
 }
 
-func runAgentPrompt(agentID, root, prompt string, extraEnv []string) (string, error) {
+func runAgentPrompt(agentID, root, prompt string, extraEnv []string, streamPrefix string) (string, error) {
 	normalized, binary, err := agentBinaryForID(agentID)
 	if err != nil {
 		return "", err
@@ -1135,8 +1136,86 @@ func runAgentPrompt(agentID, root, prompt string, extraEnv []string) (string, er
 	}
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), extraEnv...)
-	output, runErr := cmd.CombinedOutput()
-	return strings.TrimSpace(string(output)), runErr
+
+	var combined synchronizedBuffer
+	stdoutStream := io.MultiWriter(&combined, newLinePrefixWriter(os.Stdout, streamPrefix))
+	stderrPrefix := streamPrefix
+	if strings.TrimSpace(stderrPrefix) == "" {
+		stderrPrefix = "[agent][stderr] "
+	} else {
+		stderrPrefix += "[stderr] "
+	}
+	stderrStream := io.MultiWriter(&combined, newLinePrefixWriter(os.Stdout, stderrPrefix))
+	cmd.Stdout = stdoutStream
+	cmd.Stderr = stderrStream
+
+	runErr := cmd.Run()
+	return strings.TrimSpace(combined.String()), runErr
+}
+
+type synchronizedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+type linePrefixWriter struct {
+	mu        sync.Mutex
+	dst       io.Writer
+	prefix    string
+	lineStart bool
+}
+
+func newLinePrefixWriter(dst io.Writer, prefix string) *linePrefixWriter {
+	return &linePrefixWriter{
+		dst:       dst,
+		prefix:    prefix,
+		lineStart: true,
+	}
+}
+
+func (w *linePrefixWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	written := 0
+	for len(p) > 0 {
+		if w.lineStart {
+			if _, err := io.WriteString(w.dst, w.prefix); err != nil {
+				return written, err
+			}
+			w.lineStart = false
+		}
+
+		newline := bytes.IndexByte(p, '\n')
+		if newline == -1 {
+			n, err := w.dst.Write(p)
+			written += n
+			return written, err
+		}
+
+		chunk := p[:newline+1]
+		n, err := w.dst.Write(chunk)
+		written += n
+		if err != nil {
+			return written, err
+		}
+		w.lineStart = true
+		p = p[newline+1:]
+	}
+
+	return written, nil
 }
 
 func buildEpicImprovementPassPrompt(epicID string, pass, total int, role string) string {
