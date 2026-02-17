@@ -170,12 +170,18 @@ Behavior:
 1. chooses issue:
    - explicit argument, or
    - first issue from `bd list --status open --ready`
-2. `bd update <issue> --status in_progress --remove-label yoke:in_review`
-3. switch to branch `yoke/<issue>` or create it
+2. if selected issue is an epic:
+   - traverses epic descendants
+   - prefers an `in_progress` child task if present
+   - otherwise picks first ready open child task
+   - if all child tasks are closed, closes the epic and exits
+3. `bd update <resolved-issue> --status in_progress --remove-label yoke:in_review`
+4. switch to branch `yoke/<resolved-issue>` or create it
 
 Failure cases:
 - `bd` missing
 - no claimable issue when omitted
+- explicit epic has no claimable child task (all remaining children blocked or already claimed)
 - git branch switch failure
 
 Examples:

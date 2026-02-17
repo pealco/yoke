@@ -710,10 +710,11 @@ func ensureIssueBranchCheckedOut(issue string) error {
 }
 
 type bdListIssue struct {
-	ID     string   `json:"id"`
-	Title  string   `json:"title"`
-	Status string   `json:"status"`
-	Labels []string `json:"labels"`
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Status    string   `json:"status"`
+	IssueType string   `json:"issue_type"`
+	Labels    []string `json:"labels"`
 }
 
 func firstIssueByStatus(prefix, status string) (string, error) {
@@ -765,6 +766,11 @@ func issueStatus(issue string) (string, error) {
 	return parseIssueStatusJSON(output)
 }
 
+func issueDetails(issue string) (bdListIssue, error) {
+	output := commandCombinedOutput("bd", "show", issue, "--json")
+	return parseBDShowIssueJSON(output)
+}
+
 func parseIssueStatusJSON(raw string) (string, error) {
 	issue, err := parseBDShowIssueJSON(raw)
 	if err != nil {
@@ -800,6 +806,136 @@ func parseBDShowIssueJSON(raw string) (bdListIssue, error) {
 		return bdListIssue{}, errors.New("issue payload missing issue data")
 	}
 	return singlePayload, nil
+}
+
+func listIssuesByStatus(status string, readyOnly bool) ([]bdListIssue, error) {
+	args := []string{"list", "--status", status, "--json", "--limit", "0"}
+	if readyOnly {
+		args = append(args, "--ready")
+	}
+
+	output := commandCombinedOutput("bd", args...)
+	return parseBDListIssuesJSON(output)
+}
+
+func listChildIssues(parent string) ([]bdListIssue, error) {
+	output := commandCombinedOutput("bd", "children", parent, "--json")
+	return parseBDListIssuesJSON(output)
+}
+
+func collectDescendantIssues(root string) ([]bdListIssue, error) {
+	visited := map[string]bool{}
+	var descendants []bdListIssue
+
+	var visit func(string) error
+	visit = func(parent string) error {
+		children, err := listChildIssues(parent)
+		if err != nil {
+			return err
+		}
+		for _, child := range children {
+			id := strings.TrimSpace(child.ID)
+			if id == "" || visited[id] {
+				continue
+			}
+			visited[id] = true
+			descendants = append(descendants, child)
+
+			if err := visit(id); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if err := visit(root); err != nil {
+		return nil, err
+	}
+
+	return descendants, nil
+}
+
+func pickEpicChildToClaim(descendants, inProgress, ready []bdListIssue) (string, bool) {
+	workItems := map[string]bdListIssue{}
+	for _, issue := range descendants {
+		id := strings.TrimSpace(issue.ID)
+		if id == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(issue.IssueType), "epic") {
+			continue
+		}
+		workItems[id] = issue
+	}
+
+	if len(workItems) == 0 {
+		return "", true
+	}
+
+	for _, issue := range inProgress {
+		id := strings.TrimSpace(issue.ID)
+		if _, ok := workItems[id]; ok {
+			return id, false
+		}
+	}
+
+	for _, issue := range ready {
+		id := strings.TrimSpace(issue.ID)
+		if _, ok := workItems[id]; ok {
+			return id, false
+		}
+	}
+
+	for _, issue := range workItems {
+		if workflowStatusForIssue(issue) != "closed" {
+			return "", false
+		}
+	}
+
+	return "", true
+}
+
+func resolveClaimIssue(issue string) (string, bool, error) {
+	details, err := issueDetails(issue)
+	if err != nil {
+		return "", false, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(details.IssueType), "epic") {
+		return issue, false, nil
+	}
+
+	descendants, err := collectDescendantIssues(issue)
+	if err != nil {
+		return "", false, err
+	}
+
+	inProgress, err := listIssuesByStatus("in_progress", false)
+	if err != nil {
+		return "", false, err
+	}
+	ready, err := listIssuesByStatus("open", true)
+	if err != nil {
+		return "", false, err
+	}
+
+	target, epicComplete := pickEpicChildToClaim(descendants, inProgress, ready)
+	if target != "" {
+		return target, false, nil
+	}
+	if epicComplete {
+		currentStatus, err := issueStatus(issue)
+		if err != nil {
+			return "", false, err
+		}
+		if currentStatus != "closed" {
+			if err := runCommand("bd", "close", issue, "--reason", "all-child-tasks-closed"); err != nil {
+				return "", false, err
+			}
+		}
+		return "", true, nil
+	}
+
+	return "", false, fmt.Errorf("epic %s has no claimable child tasks (all remaining children are blocked or already claimed)", issue)
 }
 
 func workflowStatusForIssue(issue bdListIssue) string {
@@ -853,6 +989,20 @@ func cmdClaim(args []string) error {
 	}
 	if issue == "" {
 		return errors.New("no issue provided and bd ready returned nothing")
+	}
+
+	requestedIssue := issue
+	resolvedIssue, epicCompleted, err := resolveClaimIssue(issue)
+	if err != nil {
+		return err
+	}
+	if epicCompleted {
+		note("Epic " + requestedIssue + " is complete; closed epic.")
+		return nil
+	}
+	issue = resolvedIssue
+	if requestedIssue != issue {
+		note("Epic " + requestedIssue + " -> claiming child task " + issue)
 	}
 
 	if err := runCommand("bd", "update", issue, "--status", "in_progress", "--remove-label", reviewQueueLabel); err != nil {
@@ -2055,6 +2205,8 @@ Purpose:
 
 Behavior:
   - If issue id omitted, picks first issue from bd open+ready list.
+  - If issue id is an epic, claims the next ready/in-progress child task in that epic.
+  - If an epic has no remaining open child tasks, yoke closes the epic and exits.
   - Runs bd update <issue> --status in_progress.
   - Removes yoke review-queue label if present.
   - Switches to existing branch yoke/<issue> or creates it.

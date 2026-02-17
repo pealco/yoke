@@ -93,6 +93,10 @@ flowchart TD
 ### `claim`
 
 - Resolves target issue (explicit or first `bd list --status open --ready`) using `YOKE_BD_PREFIX`.
+- If target is an epic, resolves claim target to an epic child task:
+  - prefers an existing `in_progress` child task
+  - otherwise selects a ready open child task
+  - closes the epic automatically when all child tasks are closed
 - Calls `bd update <issue> --status in_progress --remove-label yoke:in_review`.
 - Moves repository to task branch `yoke/<bd-id>`.
 

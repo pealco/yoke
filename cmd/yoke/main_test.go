@@ -434,6 +434,72 @@ func TestFormatDaemonNoConsensusPRComment(t *testing.T) {
 	}
 }
 
+func TestPickEpicChildToClaimPrefersInProgress(t *testing.T) {
+	t.Parallel()
+
+	descendants := []bdListIssue{
+		{ID: "bd-epic.1", IssueType: "task", Status: "open"},
+		{ID: "bd-epic.2", IssueType: "task", Status: "open"},
+	}
+	inProgress := []bdListIssue{
+		{ID: "bd-epic.2", IssueType: "task", Status: "in_progress"},
+	}
+	ready := []bdListIssue{
+		{ID: "bd-epic.1", IssueType: "task", Status: "open"},
+	}
+
+	got, done := pickEpicChildToClaim(descendants, inProgress, ready)
+	if got != "bd-epic.2" || done {
+		t.Fatalf("pickEpicChildToClaim = (%q, %v), want (bd-epic.2, false)", got, done)
+	}
+}
+
+func TestPickEpicChildToClaimReadyFallback(t *testing.T) {
+	t.Parallel()
+
+	descendants := []bdListIssue{
+		{ID: "bd-epic.1", IssueType: "task", Status: "open"},
+		{ID: "bd-epic.2", IssueType: "task", Status: "open"},
+	}
+	ready := []bdListIssue{
+		{ID: "bd-epic.2", IssueType: "task", Status: "open"},
+	}
+
+	got, done := pickEpicChildToClaim(descendants, nil, ready)
+	if got != "bd-epic.2" || done {
+		t.Fatalf("pickEpicChildToClaim = (%q, %v), want (bd-epic.2, false)", got, done)
+	}
+}
+
+func TestPickEpicChildToClaimComplete(t *testing.T) {
+	t.Parallel()
+
+	descendants := []bdListIssue{
+		{ID: "bd-epic.1", IssueType: "task", Status: "closed"},
+		{ID: "bd-epic.2", IssueType: "task", Status: "closed"},
+		{ID: "bd-epic.3", IssueType: "epic", Status: "open"},
+	}
+
+	got, done := pickEpicChildToClaim(descendants, nil, nil)
+	if got != "" || !done {
+		t.Fatalf("pickEpicChildToClaim = (%q, %v), want (\"\", true)", got, done)
+	}
+}
+
+func TestPickEpicChildToClaimBlocked(t *testing.T) {
+	t.Parallel()
+
+	descendants := []bdListIssue{
+		{ID: "bd-epic.1", IssueType: "task", Status: "blocked"},
+		{ID: "bd-epic.2", IssueType: "task", Status: "open"},
+	}
+
+	got, done := pickEpicChildToClaim(descendants, nil, nil)
+	if got != "" || done {
+		t.Fatalf("pickEpicChildToClaim = (%q, %v), want (\"\", false)", got, done)
+	}
+}
+
 func contains(value, substring string) bool {
 	return strings.Contains(value, substring)
 }
