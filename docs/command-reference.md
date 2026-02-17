@@ -234,18 +234,19 @@ Purpose:
 Behavior:
 1. resolve issue id:
    - explicit argument, or
-   - infer from current branch name containing `<YOKE_BD_PREFIX>-...`
+   - infer from current branch name using any valid `<prefix>-...` issue id pattern
 2. run checks:
    - default from `YOKE_CHECK_CMD`
    - override with `--checks`
 3. add handoff note via `bd comments add`
-4. move issue to review queue via `bd update <issue> --status blocked --add-label yoke:in_review`
-5. push branch to `origin` unless `--no-push`
-6. open draft PR via `gh` unless `--no-pr`
+4. push branch to `origin` unless `--no-push`
+5. open draft PR via `gh` unless `--no-pr`
    - skips PR creation when `gh` missing
    - skips PR creation when `origin` missing
    - skips PR creation when open PR already exists for branch
-7. post writer handoff comment to the branch PR unless `--no-pr-comment`
+6. if `--no-pr` is not set, verifies an open PR exists for the issue branch; errors if no PR is found
+7. move issue to review queue via `bd update <issue> --status blocked --add-label yoke:in_review`
+8. post writer handoff comment to the branch PR unless `--no-pr-comment`
 
 Examples:
 
@@ -276,10 +277,10 @@ Behavior:
 3. optional `--note`:
    - `bd comments add <issue> <note>`
 4. decision:
-   - `--approve` -> `bd close <issue>`
+   - `--approve` -> requires an open PR for the issue branch, then `bd close <issue>`
    - `--reject` -> add rejection note and run `bd update <issue> --status in_progress --remove-label yoke:in_review`
    - no decision -> `bd show <issue>` and next-step hints
-5. `--approve` also marks the issue PR ready for review (draft -> ready) when an open draft PR exists
+5. `--approve` also marks the issue PR ready for review (draft -> ready)
 6. for approve/reject/note actions, posts reviewer update comment to PR unless `--no-pr-comment`
 
 Failure cases:

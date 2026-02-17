@@ -2313,10 +2313,6 @@ func cmdSubmit(args []string) error {
 		return err
 	}
 
-	if err := runCommand("bd", "update", issue, "--status", "blocked", "--add-label", reviewQueueLabel); err != nil {
-		return err
-	}
-
 	if !noPush {
 		if hasOriginRemote() {
 			if err := runCommand("git", "push", "-u", "origin", "HEAD"); err != nil {
@@ -2332,6 +2328,13 @@ func cmdSubmit(args []string) error {
 		if err := createPRIfNeeded(root, cfg, issue, title); err != nil {
 			return err
 		}
+		if _, _, _, ok := openPRForIssue(issue); !ok {
+			return fmt.Errorf("no open PR found for %s after submit; expected branch %s to have an open PR", issue, branchForIssue(issue))
+		}
+	}
+
+	if err := runCommand("bd", "update", issue, "--status", "blocked", "--add-label", reviewQueueLabel); err != nil {
+		return err
 	}
 	if !noPRNote {
 		postSubmitPRComment(issue, doneText, remaining, decision, uncertain, checkCommand)
@@ -2437,6 +2440,10 @@ func cmdReview(args []string) error {
 
 	switch action {
 	case "approve":
+		prNumber, _, isDraft, ok := openPRForIssue(issue)
+		if !ok {
+			return fmt.Errorf("cannot approve %s: no open PR found for issue branch %s", issue, branchForIssue(issue))
+		}
 		if err := runCommand("bd", "close", issue, "--reason", "approved-by-yoke-review"); err != nil {
 			return err
 		}
@@ -2447,7 +2454,7 @@ func cmdReview(args []string) error {
 		if currentStatus != "closed" {
 			return fmt.Errorf("bd close did not close %s (current status: %s)", issue, currentStatus)
 		}
-		if err := ensureIssuePRReady(issue); err != nil {
+		if err := ensurePRReady(prNumber, isDraft); err != nil {
 			return err
 		}
 		clearDaemonFocusIssue(root)
@@ -3199,13 +3206,8 @@ func formatDaemonNoConsensusPRComment(issue, status string, maxIterations int) s
 	return strings.Join(lines, "\n")
 }
 
-func ensureIssuePRReady(issue string) error {
-	number, _, isDraft, ok := openPRForIssue(issue)
-	if !ok {
-		note("warning: no open PR found for issue branch; skipping ready-for-review transition")
-		return nil
-	}
-	if !isDraft {
+func ensurePRReady(number string, isDraft bool) error {
+	if strings.TrimSpace(number) == "" || !isDraft {
 		return nil
 	}
 	if err := runCommand("gh", "pr", "ready", number); err != nil {
@@ -3447,12 +3449,13 @@ Purpose:
 Behavior:
   1) Runs checks (default: .yoke/checks.sh).
   2) Writes a handoff comment to the bd issue.
-  3) Moves issue into review queue (status blocked + label yoke:in_review).
-  4) Pushes branch and opens draft PR when configured tools are available.
-  5) Posts writer handoff summary comment to the branch PR.
+  3) Pushes branch unless --no-push.
+  4) Creates or reuses an open PR unless --no-pr.
+  5) Moves issue into review queue (status blocked + label yoke:in_review).
+  6) Posts writer handoff summary comment to the branch PR.
 
 Inputs:
-  issue-id    Optional. If omitted, inferred from current branch name using YOKE_BD_PREFIX.
+  issue-id    Optional. If omitted, inferred from current branch name.
 
 Options:
   --done TEXT          Required. What is complete now.
@@ -3481,12 +3484,12 @@ Behavior:
   - If issue id omitted, selects first issue in review queue (blocked + yoke:in_review).
   - Optional reviewer automation can run before final action.
   - Reviewer automation receives ISSUE_ID, ROOT_DIR, BD_PREFIX, and YOKE_ROLE=reviewer.
-  - Approve closes review path and marks the issue PR ready for review (lifts draft).
+  - Approve requires an open PR on the issue branch, then closes the issue and marks draft PR ready.
   - Reject adds a rejection note and returns work to writer path (in_progress, removes yoke:in_review).
   - Approve/reject/note actions post reviewer update comments to the branch PR.
 
 Inputs:
-  issue-id    Optional. Explicit issue id using YOKE_BD_PREFIX.
+  issue-id    Optional. Explicit issue id.
 
 Options:
   --agent              Run YOKE_REVIEW_CMD before final action.
