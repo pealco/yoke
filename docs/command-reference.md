@@ -167,14 +167,16 @@ Purpose:
 - claim and activate a task for implementation
 
 Options:
-- `--improvement-passes <N>`: limit epic improvement passes (1-5, default: 5)
+- `--improvement-passes <N>`: limit epic improvement passes (0-5, default: 5; `0` skips passes)
 
 Behavior:
 1. chooses issue:
    - explicit argument, or
    - first issue from `bd list --status open --ready`
 2. if selected issue is an epic:
-   - scans descendant tasks titled `Clarification needed: ...` and loads their comments as clarification context
+   - if `--improvement-passes 0`, skips epic improvement passes and proceeds directly to child-task selection
+   - if `--improvement-passes` is greater than 0:
+     - scans descendant tasks titled `Clarification needed: ...` and loads their comments as clarification context
    - if improvement is already marked complete but clarification comments exist, automatically reruns improvement
    - runs an epic improvement cycle (writer/reviewer alternating) using the configured agents
    - pass count defaults to 5 and can be limited with `--improvement-passes`

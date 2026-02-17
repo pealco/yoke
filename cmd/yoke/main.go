@@ -27,7 +27,7 @@ const (
 	defaultDaemonPoll = 30 * time.Second
 	reviewQueueLabel  = "yoke:in_review"
 	epicPassCount     = 5
-	minEpicPassCount  = 1
+	minEpicPassCount  = 0
 
 	epicImprovementCompleteLabel = "yoke:epic-improvement-complete"
 	epicImprovementRunningLabel  = "yoke:epic-improvement-running"
@@ -1185,9 +1185,13 @@ func resolveClaimIssue(root string, cfg config, issue string, passLimit int) (st
 		claimNote("Epic is already closed; no child task to claim.")
 		return "", true, nil
 	}
-	claimNote(fmt.Sprintf("Issue is an epic; running epic improvement cycle (limit=%d pass(es)) before selecting a child task.", passLimit))
-	if err := runEpicImprovementCycle(root, cfg, details, passLimit); err != nil {
-		return "", false, err
+	if passLimit == 0 {
+		claimNote("Issue is an epic; improvement pass limit is 0, skipping epic improvement cycle.")
+	} else {
+		claimNote(fmt.Sprintf("Issue is an epic; running epic improvement cycle (limit=%d pass(es)) before selecting a child task.", passLimit))
+		if err := runEpicImprovementCycle(root, cfg, details, passLimit); err != nil {
+			return "", false, err
+		}
 	}
 	claimNote("Auto-resolving clarification tasks that have comments.")
 	autoClosedCount, err := closeClarificationTasksWithComments(issue)
@@ -1280,6 +1284,10 @@ type epicImprovementPassReport struct {
 func runEpicImprovementCycle(root string, cfg config, epic bdListIssue, passLimit int) error {
 	if passLimit < minEpicPassCount || passLimit > epicPassCount {
 		return fmt.Errorf("improvement pass limit must be between %d and %d", minEpicPassCount, epicPassCount)
+	}
+	if passLimit == 0 {
+		claimNote("Epic improvement pass limit is 0; skipping epic improvement cycle.")
+		return nil
 	}
 	if strings.TrimSpace(epicImprovementPromptTemplate) == "" {
 		return errors.New("epic improvement prompt template is empty")
@@ -2985,6 +2993,7 @@ Behavior:
   - If issue id omitted, picks first issue from bd open+ready list.
   - If issue id is an epic, runs an epic improvement cycle (writer/reviewer alternating) before task claim.
   - Improvement cycle pass count defaults to 5 and can be limited with --improvement-passes.
+  - Use --improvement-passes 0 to skip improvement passes and continue directly to child-task claim selection.
   - If improvement is already marked complete but clarification tasks have comments, yoke reruns improvement automatically.
   - Clarification tasks with comments are auto-closed before selecting the next child task.
   - In-progress child tasks with unmet blocking dependencies are skipped.
@@ -2999,7 +3008,7 @@ Inputs:
   issue-id    Optional. Explicit issue id (example uses prefix from YOKE_BD_PREFIX).
 
 Options:
-  --improvement-passes N   Limit epic improvement passes (1-5, default 5).
+  --improvement-passes N   Limit epic improvement passes (0-5, default 5; 0 skips).
 
 Examples:
   yoke claim
