@@ -906,51 +906,68 @@ func pickEpicChildToClaim(descendants, inProgress, ready []bdListIssue) (string,
 }
 
 func resolveClaimIssue(root string, cfg config, issue string) (string, bool, error) {
+	claimNote("Loading issue details for " + issue)
 	details, err := issueDetails(issue)
 	if err != nil {
 		return "", false, err
 	}
+	claimNote(fmt.Sprintf("Issue %s resolved as type=%s status=%s", details.ID, details.IssueType, workflowStatusForIssue(details)))
 	if !strings.EqualFold(strings.TrimSpace(details.IssueType), "epic") {
+		claimNote("Issue is not an epic; proceeding with direct claim.")
 		return issue, false, nil
 	}
 	if workflowStatusForIssue(details) == "closed" {
+		claimNote("Epic is already closed; no child task to claim.")
 		return "", true, nil
 	}
+	claimNote("Issue is an epic; running epic improvement cycle before selecting a child task.")
 	if err := runEpicImprovementCycle(root, cfg, details); err != nil {
 		return "", false, err
 	}
+	claimNote("Collecting epic descendants for claim selection.")
 
 	descendants, err := collectDescendantIssues(issue)
 	if err != nil {
 		return "", false, err
 	}
+	claimNote(fmt.Sprintf("Collected %d descendant issue(s).", len(descendants)))
 
+	claimNote("Loading in-progress issues for possible resume.")
 	inProgress, err := listIssuesByStatus("in_progress", false)
 	if err != nil {
 		return "", false, err
 	}
+	claimNote(fmt.Sprintf("Found %d in-progress issue(s).", len(inProgress)))
+	claimNote("Loading ready open issues for fallback selection.")
 	ready, err := listIssuesByStatus("open", true)
 	if err != nil {
 		return "", false, err
 	}
+	claimNote(fmt.Sprintf("Found %d ready open issue(s).", len(ready)))
 
 	target, epicComplete := pickEpicChildToClaim(descendants, inProgress, ready)
 	if target != "" {
+		claimNote("Selected claimable child task: " + target)
 		return target, false, nil
 	}
 	if epicComplete {
+		claimNote("All non-epic descendants are closed; closing epic.")
 		currentStatus, err := issueStatus(issue)
 		if err != nil {
 			return "", false, err
 		}
 		if currentStatus != "closed" {
+			claimNote("Closing epic " + issue + " with reason all-child-tasks-closed.")
 			if err := runCommand("bd", "close", issue, "--reason", "all-child-tasks-closed"); err != nil {
 				return "", false, err
 			}
+		} else {
+			claimNote("Epic already closed; no close command needed.")
 		}
 		return "", true, nil
 	}
 
+	claimNote("No claimable child task found; remaining work is blocked or already claimed.")
 	return "", false, fmt.Errorf("epic %s has no claimable child tasks (all remaining children are blocked or already claimed)", issue)
 }
 
@@ -966,13 +983,17 @@ func runEpicImprovementCycle(root string, cfg config, epic bdListIssue) error {
 		return errors.New("epic improvement prompt template is empty")
 	}
 	if hasLabel(epic.Labels, epicImprovementCompleteLabel) {
+		claimNote("Epic improvement cycle already complete (label present); skipping rerun.")
 		return nil
 	}
 
+	claimNote(fmt.Sprintf("Starting epic improvement cycle for %s (%d passes).", epic.ID, epicPassCount))
 	reportsDir := filepath.Join(root, ".yoke", "epic-improvement-reports", sanitizePathSegment(epic.ID))
+	claimNote("Improvement reports directory: " + reportsDir)
 	if err := os.MkdirAll(reportsDir, 0o755); err != nil {
 		return err
 	}
+	claimNote("Marking epic as improvement-running.")
 	if err := runCommand("bd", "update", epic.ID, "--add-label", epicImprovementRunningLabel); err != nil {
 		return err
 	}
@@ -984,6 +1005,7 @@ func runEpicImprovementCycle(root string, cfg config, epic bdListIssue) error {
 		if err != nil {
 			return err
 		}
+		claimNote(fmt.Sprintf("Improvement pass %d/%d starting (role=%s, agent=%s).", pass, epicPassCount, role, agentID))
 
 		prompt := buildEpicImprovementPassPrompt(epic.ID, pass, epicPassCount, role)
 		output, runErr := runAgentPrompt(agentID, root, prompt, []string{
@@ -998,9 +1020,12 @@ func runEpicImprovementCycle(root string, cfg config, epic bdListIssue) error {
 		if err := writeEpicImprovementPassReport(reportPath, epic.ID, pass, role, agentID, output, runErr); err != nil {
 			return err
 		}
+		claimNote("Saved improvement pass report: " + reportPath)
 		if runErr != nil {
+			claimNote(fmt.Sprintf("Improvement pass %d failed; see report: %s", pass, reportPath))
 			return fmt.Errorf("epic improvement pass %d (%s) failed: %w (report: %s)", pass, role, runErr, reportPath)
 		}
+		claimNote(fmt.Sprintf("Improvement pass %d/%d completed.", pass, epicPassCount))
 
 		reports = append(reports, epicImprovementPassReport{
 			Pass:    pass,
@@ -1014,6 +1039,7 @@ func runEpicImprovementCycle(root string, cfg config, epic bdListIssue) error {
 	if err != nil {
 		return err
 	}
+	claimNote("Generating final improvement summary with reviewer agent " + summaryAgentID + ".")
 	summaryPrompt := buildEpicImprovementSummaryPrompt(epic, reports)
 	summary, runErr := runAgentPrompt(summaryAgentID, root, summaryPrompt, []string{
 		"ISSUE_ID=" + epic.ID,
@@ -1026,14 +1052,18 @@ func runEpicImprovementCycle(root string, cfg config, epic bdListIssue) error {
 	if err := writeEpicImprovementSummary(summaryPath, epic.ID, summaryAgentID, summary, runErr); err != nil {
 		return err
 	}
+	claimNote("Saved improvement summary report: " + summaryPath)
 	if runErr != nil {
+		claimNote("Improvement summary generation failed; see report: " + summaryPath)
 		return fmt.Errorf("epic improvement summary failed: %w (report: %s)", runErr, summaryPath)
 	}
 
+	claimNote("Posting improvement summary comment to epic " + epic.ID + ".")
 	comment := formatEpicImprovementSummaryComment(epic, summary, reportsDir)
 	if err := runCommand("bd", "comments", "add", epic.ID, comment); err != nil {
 		return err
 	}
+	claimNote("Marking epic improvement complete and clearing running label.")
 	if err := runCommand("bd", "update", epic.ID,
 		"--add-label", epicImprovementCompleteLabel,
 		"--remove-label", epicImprovementRunningLabel,
@@ -1236,37 +1266,46 @@ func cmdClaim(args []string) error {
 	if len(args) > 1 {
 		return fmt.Errorf("usage: yoke claim [bd-issue-id]")
 	}
+	claimNote("Starting claim command.")
 
 	root, err := ensureRepoRoot()
 	if err != nil {
 		return err
 	}
+	claimNote("Resolved repository root: " + root)
 	cfg, err := loadConfig(root)
 	if err != nil {
 		return err
 	}
+	claimNote("Loaded config with bd prefix: " + cfg.BDPrefix)
 	if !commandExists("bd") {
 		return fmt.Errorf("missing required command: bd")
 	}
+	claimNote("Verified required command: bd")
 
 	issue := ""
 	if len(args) == 1 {
 		issue = args[0]
+		claimNote("Using explicit issue argument: " + issue)
 	}
 
 	if issue == "" {
+		claimNote("No issue argument provided; selecting next ready open issue from bd.")
 		issue = nextIssueID(cfg.BDPrefix)
 	}
 	if issue == "" {
 		return errors.New("no issue provided and bd ready returned nothing")
 	}
+	claimNote("Requested claim target: " + issue)
 
 	requestedIssue := issue
+	claimNote("Resolving target with epic-aware claim logic.")
 	resolvedIssue, epicCompleted, err := resolveClaimIssue(root, cfg, issue)
 	if err != nil {
 		return err
 	}
 	if epicCompleted {
+		claimNote("Requested epic has no remaining open child tasks.")
 		note("Epic " + requestedIssue + " is complete; closed epic.")
 		return nil
 	}
@@ -1275,20 +1314,26 @@ func cmdClaim(args []string) error {
 		note("Epic " + requestedIssue + " -> claiming child task " + issue)
 	}
 
+	claimNote("Transitioning issue to in_progress and removing review queue label if present.")
 	if err := runCommand("bd", "update", issue, "--status", "in_progress", "--remove-label", reviewQueueLabel); err != nil {
 		return err
 	}
+	claimNote("Issue state updated successfully.")
 
 	branch := branchForIssue(issue)
+	claimNote("Preparing git branch: " + branch)
 	if refExists("refs/heads/" + branch) {
+		claimNote("Branch exists locally; switching.")
 		if err := runCommand("git", "switch", branch); err != nil {
 			return err
 		}
 	} else {
+		claimNote("Branch does not exist; creating and switching.")
 		if err := runCommand("git", "switch", "-c", branch); err != nil {
 			return err
 		}
 	}
+	claimNote("Branch is ready for development.")
 
 	note(fmt.Sprintf("Claimed %s on branch %s", issue, branch))
 	note(fmt.Sprintf("Next: yoke submit %s --done \"...\" --remaining \"...\"", issue))
@@ -2303,6 +2348,10 @@ func fileExists(path string) bool {
 
 func note(msg string) {
 	fmt.Println(msg)
+}
+
+func claimNote(msg string) {
+	note("[claim] " + msg)
 }
 
 func fatal(err error) {
