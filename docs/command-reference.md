@@ -192,6 +192,7 @@ Behavior:
 3. `bd update <resolved-issue> --status in_progress --remove-label yoke:in_review`
 4. persist daemon focus to `<repo>/.yoke/daemon-focus` so active daemons resume this issue
 5. ensure worktree `.yoke/worktrees/<resolved-issue>` exists and is attached to branch `yoke/<resolved-issue>`
+   - for epic child tasks, new task branches are created from epic branch `yoke/<epic-id>`
 
 Failure cases:
 - `bd` missing
@@ -244,9 +245,11 @@ Behavior:
    - skips PR creation when `gh` missing
    - skips PR creation when `origin` missing
    - skips PR creation when open PR already exists for branch
-6. if `--no-pr` is not set, verifies an open PR exists for the issue branch; errors if no PR is found
-7. move issue to review queue via `bd update <issue> --status blocked --add-label yoke:in_review`
-8. post writer handoff comment to the branch PR unless `--no-pr-comment`
+6. for epic child tasks, ensure epic branch `yoke/<epic-id>` has an open PR to `YOKE_BASE_BRANCH`
+7. for epic child tasks, create/reuse task PR with base `yoke/<epic-id>`; otherwise base is `YOKE_BASE_BRANCH`
+8. if `--no-pr` is not set, verifies an open PR exists for the issue branch; errors if no PR is found
+9. move issue to review queue via `bd update <issue> --status blocked --add-label yoke:in_review`
+10. post writer handoff comment to the branch PR unless `--no-pr-comment`
 
 Examples:
 
@@ -277,11 +280,11 @@ Behavior:
 3. optional `--note`:
    - `bd comments add <issue> <note>`
 4. decision:
-   - `--approve` -> requires an open PR for the issue branch, then `bd close <issue>`
+   - `--approve` -> requires an open PR for the issue branch, marks draft PR ready, then `bd close <issue>`
+     - for epic child tasks, also fast-forwards epic branch `yoke/<epic-id>` to task branch and ensures epic PR
    - `--reject` -> add rejection note and run `bd update <issue> --status in_progress --remove-label yoke:in_review`
    - no decision -> `bd show <issue>` and next-step hints
-5. `--approve` also marks the issue PR ready for review (draft -> ready)
-6. for approve/reject/note actions, posts reviewer update comment to PR unless `--no-pr-comment`
+5. for approve/reject/note actions, posts reviewer update comment to PR unless `--no-pr-comment`
 
 Failure cases:
 - `bd` missing

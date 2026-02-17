@@ -577,7 +577,7 @@ func runDaemonIteration(root string, cfg config, writerCmd, reviewerCmd string) 
 		reviewable = firstReviewableIssueID(cfg.BDPrefix)
 	}
 	if reviewable != "" {
-		worktreePath, err := ensureIssueWorktree(root, reviewable)
+		worktreePath, err := ensureIssueWorktree(root, cfg, reviewable)
 		if err != nil {
 			return "", err
 		}
@@ -592,7 +592,7 @@ func runDaemonIteration(root string, cfg config, writerCmd, reviewerCmd string) 
 		return "", err
 	}
 	if inProgress != "" {
-		worktreePath, err := ensureIssueWorktree(root, inProgress)
+		worktreePath, err := ensureIssueWorktree(root, cfg, inProgress)
 		if err != nil {
 			return "", err
 		}
@@ -1063,7 +1063,60 @@ func worktreePathForBranch(root, branch string) string {
 	return ""
 }
 
-func ensureIssueWorktree(root, issue string) (string, error) {
+func localOrRemoteRef(branch string) string {
+	ref := strings.TrimSpace(branch)
+	if ref == "" {
+		return ""
+	}
+	if refExists("refs/heads/" + ref) {
+		return ref
+	}
+	if refExists("refs/remotes/origin/" + ref) {
+		return "origin/" + ref
+	}
+	return ""
+}
+
+func ensureLocalBranch(root, branch, defaultStart string) error {
+	target := strings.TrimSpace(branch)
+	if target == "" {
+		return errors.New("branch name cannot be empty")
+	}
+	if refExists("refs/heads/" + target) {
+		return nil
+	}
+	if refExists("refs/remotes/origin/" + target) {
+		return runCommand("git", "-C", root, "branch", target, "origin/"+target)
+	}
+
+	startPoint := localOrRemoteRef(defaultStart)
+	if startPoint == "" {
+		startPoint = "HEAD"
+	}
+	return runCommand("git", "-C", root, "branch", target, startPoint)
+}
+
+func issueBranchStartPoint(root string, cfg config, issue string) (string, error) {
+	epicID, err := epicAncestorID(issue)
+	if err != nil {
+		return "", err
+	}
+	if epicID != "" && !strings.EqualFold(strings.TrimSpace(epicID), strings.TrimSpace(issue)) {
+		epicBranch := branchForIssue(epicID)
+		if err := ensureLocalBranch(root, epicBranch, cfg.BaseBranch); err != nil {
+			return "", err
+		}
+		return epicBranch, nil
+	}
+
+	startPoint := localOrRemoteRef(cfg.BaseBranch)
+	if startPoint == "" {
+		startPoint = "HEAD"
+	}
+	return startPoint, nil
+}
+
+func ensureIssueWorktree(root string, cfg config, issue string) (string, error) {
 	branch := branchForIssue(issue)
 	worktreePath := worktreePathForIssue(root, issue)
 
@@ -1081,7 +1134,11 @@ func ensureIssueWorktree(root, issue string) (string, error) {
 				return "", err
 			}
 		} else {
-			if err := runCommand("git", "-C", root, "worktree", "add", "-b", branch, worktreePath); err != nil {
+			startPoint, err := issueBranchStartPoint(root, cfg, issue)
+			if err != nil {
+				return "", err
+			}
+			if err := runCommand("git", "-C", root, "worktree", "add", "-b", branch, worktreePath, startPoint); err != nil {
 				return "", err
 			}
 		}
@@ -1113,6 +1170,7 @@ type bdListIssue struct {
 	Title          string   `json:"title"`
 	Status         string   `json:"status"`
 	IssueType      string   `json:"issue_type"`
+	Parent         string   `json:"parent"`
 	Labels         []string `json:"labels"`
 	CommentCount   int      `json:"comment_count"`
 	DependencyType string   `json:"dependency_type"`
@@ -1208,6 +1266,35 @@ func issueStatus(issue string) (string, error) {
 func issueDetails(issue string) (bdListIssue, error) {
 	output := commandCombinedOutput("bd", "show", issue, "--json")
 	return parseBDShowIssueJSON(output)
+}
+
+func epicAncestorID(issue string) (string, error) {
+	current := strings.TrimSpace(issue)
+	if current == "" {
+		return "", nil
+	}
+
+	visited := make(map[string]struct{})
+	for depth := 0; depth < 50; depth++ {
+		if _, ok := visited[current]; ok {
+			return "", fmt.Errorf("detected parent-cycle while resolving epic ancestor for %s", issue)
+		}
+		visited[current] = struct{}{}
+
+		details, err := issueDetails(current)
+		if err != nil {
+			return "", err
+		}
+		if strings.EqualFold(strings.TrimSpace(details.IssueType), "epic") {
+			return strings.TrimSpace(details.ID), nil
+		}
+		parent := strings.TrimSpace(details.Parent)
+		if parent == "" {
+			return "", nil
+		}
+		current = parent
+	}
+	return "", fmt.Errorf("parent chain too deep while resolving epic ancestor for %s", issue)
 }
 
 func parseIssueStatusJSON(raw string) (string, error) {
@@ -2163,7 +2250,7 @@ func cmdClaim(args []string) error {
 
 	branch := branchForIssue(issue)
 	claimNote("Preparing issue worktree for branch: " + branch)
-	worktreePath, err := ensureIssueWorktree(root, issue)
+	worktreePath, err := ensureIssueWorktree(root, cfg, issue)
 	if err != nil {
 		return err
 	}
@@ -2297,7 +2384,7 @@ func cmdSubmit(args []string) error {
 		issue = currentBranchIssue(cfg.BDPrefix)
 	}
 	if issue == "" {
-		return fmt.Errorf("could not infer issue id from branch; pass %s-xxxx explicitly", cfg.BDPrefix)
+		return errors.New("could not infer issue id from branch; pass issue id explicitly")
 	}
 
 	checkCommand := cfg.CheckCmd
@@ -2324,8 +2411,15 @@ func cmdSubmit(args []string) error {
 	}
 
 	if !noPR {
+		if err := ensureEpicPRForIssue(root, cfg, issue); err != nil {
+			return err
+		}
+		baseBranch, err := issuePRBaseBranch(root, cfg, issue)
+		if err != nil {
+			return err
+		}
 		title := issueTitle(issue)
-		if err := createPRIfNeeded(root, cfg, issue, title); err != nil {
+		if err := createPRIfNeeded(root, cfg, issue, title, baseBranch); err != nil {
 			return err
 		}
 		if _, _, _, ok := openPRForIssue(issue); !ok {
@@ -2444,6 +2538,12 @@ func cmdReview(args []string) error {
 		if !ok {
 			return fmt.Errorf("cannot approve %s: no open PR found for issue branch %s", issue, branchForIssue(issue))
 		}
+		if err := ensurePRReady(prNumber, isDraft); err != nil {
+			return err
+		}
+		if err := integrateApprovedTaskIntoEpic(root, cfg, issue); err != nil {
+			return err
+		}
 		if err := runCommand("bd", "close", issue, "--reason", "approved-by-yoke-review"); err != nil {
 			return err
 		}
@@ -2453,9 +2553,6 @@ func cmdReview(args []string) error {
 		}
 		if currentStatus != "closed" {
 			return fmt.Errorf("bd close did not close %s (current status: %s)", issue, currentStatus)
-		}
-		if err := ensurePRReady(prNumber, isDraft); err != nil {
-			return err
 		}
 		clearDaemonFocusIssue(root)
 		note("Approved " + issue)
@@ -3016,7 +3113,134 @@ func isExecutable(path string) bool {
 	return info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 }
 
-func createPRIfNeeded(root string, cfg config, issue, title string) error {
+func issuePRBaseBranch(root string, cfg config, issue string) (string, error) {
+	epicID, err := epicAncestorID(issue)
+	if err != nil {
+		return "", err
+	}
+	if epicID != "" && !strings.EqualFold(strings.TrimSpace(epicID), strings.TrimSpace(issue)) {
+		epicBranch := branchForIssue(epicID)
+		if err := ensureLocalBranch(root, epicBranch, cfg.BaseBranch); err != nil {
+			return "", err
+		}
+		return epicBranch, nil
+	}
+	return cfg.BaseBranch, nil
+}
+
+func remoteBranchExists(root, branch string) bool {
+	if strings.TrimSpace(branch) == "" {
+		return false
+	}
+	cmd := exec.Command("git", "-C", root, "ls-remote", "--exit-code", "--heads", "origin", branch)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Run() == nil
+}
+
+func ensureEpicPRForIssue(root string, cfg config, issue string) error {
+	epicID, err := epicAncestorID(issue)
+	if err != nil {
+		return err
+	}
+	if epicID == "" || strings.EqualFold(strings.TrimSpace(epicID), strings.TrimSpace(issue)) {
+		return nil
+	}
+
+	epicBranch := branchForIssue(epicID)
+	if err := ensureLocalBranch(root, epicBranch, cfg.BaseBranch); err != nil {
+		return err
+	}
+	if hasOriginRemote() && !remoteBranchExists(root, epicBranch) {
+		if err := runCommand("git", "-C", root, "push", "-u", "origin", epicBranch); err != nil {
+			return err
+		}
+	}
+
+	baseRef := localOrRemoteRef(cfg.BaseBranch)
+	if baseRef == "" {
+		baseRef = cfg.BaseBranch
+	}
+	aheadCount, err := branchAheadCount(root, baseRef, epicBranch)
+	if err != nil {
+		return err
+	}
+	if aheadCount == 0 {
+		note(fmt.Sprintf("Epic branch %s has no commits beyond %s yet; deferring epic PR creation.", epicBranch, cfg.BaseBranch))
+		return nil
+	}
+
+	epicTitle := issueTitle(epicID)
+	if err := createPRForBranch(root, cfg, epicID, epicTitle, epicBranch, cfg.BaseBranch); err != nil {
+		return err
+	}
+	if _, _, _, ok := openPRForBranch(epicBranch); !ok {
+		return fmt.Errorf("no open epic PR found for %s after submit; expected branch %s to have an open PR", epicID, epicBranch)
+	}
+	return nil
+}
+
+func branchAheadCount(root, baseRef, headRef string) (int, error) {
+	leftRight := fmt.Sprintf("%s...%s", strings.TrimSpace(baseRef), strings.TrimSpace(headRef))
+	out := strings.TrimSpace(commandCombinedOutput("git", "-C", root, "rev-list", "--right-only", "--count", leftRight))
+	if out == "" {
+		return 0, nil
+	}
+	count, err := strconv.Atoi(out)
+	if err != nil {
+		return 0, fmt.Errorf("parse branch ahead count %q: %w", out, err)
+	}
+	return count, nil
+}
+
+func branchIsAncestor(root, ancestorRef, descendantRef string) bool {
+	cmd := exec.Command("git", "-C", root, "merge-base", "--is-ancestor", ancestorRef, descendantRef)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Run() == nil
+}
+
+func integrateApprovedTaskIntoEpic(root string, cfg config, issue string) error {
+	epicID, err := epicAncestorID(issue)
+	if err != nil {
+		return err
+	}
+	if epicID == "" || strings.EqualFold(strings.TrimSpace(epicID), strings.TrimSpace(issue)) {
+		return nil
+	}
+
+	epicBranch := branchForIssue(epicID)
+	taskBranch := branchForIssue(issue)
+	if err := ensureLocalBranch(root, taskBranch, cfg.BaseBranch); err != nil {
+		return err
+	}
+	if err := ensureLocalBranch(root, epicBranch, cfg.BaseBranch); err != nil {
+		return err
+	}
+	if !branchIsAncestor(root, epicBranch, taskBranch) {
+		return fmt.Errorf("cannot fast-forward epic branch %s to %s; merge %s into %s manually", epicBranch, taskBranch, taskBranch, epicBranch)
+	}
+	if err := runCommand("git", "-C", root, "branch", "-f", epicBranch, taskBranch); err != nil {
+		return err
+	}
+	if hasOriginRemote() {
+		if err := runCommand("git", "-C", root, "push", "origin", epicBranch); err != nil {
+			return err
+		}
+	}
+
+	epicTitle := issueTitle(epicID)
+	if err := createPRForBranch(root, cfg, epicID, epicTitle, epicBranch, cfg.BaseBranch); err != nil {
+		return err
+	}
+	if _, _, _, ok := openPRForBranch(epicBranch); !ok {
+		return fmt.Errorf("no open epic PR found for %s after integrating %s", epicID, issue)
+	}
+	note(fmt.Sprintf("Integrated %s into epic branch %s", issue, epicBranch))
+	return nil
+}
+
+func createPRForBranch(root string, cfg config, issue, title, headBranch, baseBranch string) error {
 	if !commandExists("gh") {
 		note("gh not found; skipping PR creation.")
 		return nil
@@ -3025,18 +3249,15 @@ func createPRIfNeeded(root string, cfg config, issue, title string) error {
 		note("No origin remote; skipping PR creation.")
 		return nil
 	}
-
-	branchOutput, err := commandOutput("git", "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil {
-		return err
-	}
-	branch := strings.TrimSpace(branchOutput)
-	if branch == "" {
+	if strings.TrimSpace(headBranch) == "" {
 		return errors.New("could not determine current branch")
 	}
+	if strings.TrimSpace(baseBranch) == "" {
+		return errors.New("could not determine PR base branch")
+	}
 
-	if number, _, _, ok := openPRForBranch(branch); ok {
-		note(fmt.Sprintf("PR #%s already exists for %s.", number, branch))
+	if number, _, _, ok := openPRForBranch(headBranch); ok {
+		note(fmt.Sprintf("PR #%s already exists for %s.", number, headBranch))
 		return nil
 	}
 
@@ -3044,7 +3265,8 @@ func createPRIfNeeded(root string, cfg config, issue, title string) error {
 	createArgs := []string{
 		"pr", "create",
 		"--draft",
-		"--base", cfg.BaseBranch,
+		"--base", baseBranch,
+		"--head", headBranch,
 		"--title", fmt.Sprintf("[%s] %s", issue, title),
 	}
 	if fileExists(templatePath) {
@@ -3053,6 +3275,15 @@ func createPRIfNeeded(root string, cfg config, issue, title string) error {
 		createArgs = append(createArgs, "--body", "")
 	}
 	return runCommand("gh", createArgs...)
+}
+
+func createPRIfNeeded(root string, cfg config, issue, title, baseBranch string) error {
+	branchOutput, err := commandOutput("git", "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return err
+	}
+	headBranch := strings.TrimSpace(branchOutput)
+	return createPRForBranch(root, cfg, issue, title, headBranch, baseBranch)
 }
 
 type prListEntry struct {
@@ -3436,6 +3667,7 @@ Examples:
 Side effects:
   - bd status transition to in_progress
   - git worktree create/reuse for issue branch
+  - for epic child tasks, new task branch starts from epic branch yoke/<epic-id>
 `)
 }
 
@@ -3450,7 +3682,10 @@ Behavior:
   1) Runs checks (default: .yoke/checks.sh).
   2) Writes a handoff comment to the bd issue.
   3) Pushes branch unless --no-push.
-  4) Creates or reuses an open PR unless --no-pr.
+  4) Creates or reuses PRs unless --no-pr:
+     - Epic child task PRs target epic branch yoke/<epic-id>.
+     - yoke ensures an epic PR exists from yoke/<epic-id> to YOKE_BASE_BRANCH.
+     - Standalone task/epic PRs target YOKE_BASE_BRANCH.
   5) Moves issue into review queue (status blocked + label yoke:in_review).
   6) Posts writer handoff summary comment to the branch PR.
 
@@ -3484,7 +3719,8 @@ Behavior:
   - If issue id omitted, selects first issue in review queue (blocked + yoke:in_review).
   - Optional reviewer automation can run before final action.
   - Reviewer automation receives ISSUE_ID, ROOT_DIR, BD_PREFIX, and YOKE_ROLE=reviewer.
-  - Approve requires an open PR on the issue branch, then closes the issue and marks draft PR ready.
+  - Approve requires an open PR on the issue branch, marks draft PR ready, and closes the issue.
+  - For epic child tasks, approve fast-forwards epic branch yoke/<epic-id> to the task branch and ensures epic PR.
   - Reject adds a rejection note and returns work to writer path (in_progress, removes yoke:in_review).
   - Approve/reject/note actions post reviewer update comments to the branch PR.
 
