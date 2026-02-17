@@ -19,6 +19,7 @@ type intakePlanEpic struct {
 }
 
 type intakePlanTask struct {
+	Ref                 string   `json:"ref"`
 	Title               string   `json:"title"`
 	Description         string   `json:"description"`
 	AcceptanceCriteria  []string `json:"acceptance_criteria"`
@@ -55,6 +56,33 @@ func validateIntakePlanForApply(plan intakePlan) error {
 	if err := validateIntakePlan(plan); err != nil {
 		return fmt.Errorf("invalid intake plan for apply: %w", err)
 	}
+
+	seenTaskRefs := make(map[string]int, len(plan.Tasks))
+	for i, task := range plan.Tasks {
+		taskPath := fmt.Sprintf("tasks[%d]", i)
+		trimmedRef := strings.TrimSpace(task.Ref)
+		if trimmedRef == "" {
+			return newIntakePlanValidationError(taskPath+".ref", "must be non-empty")
+		}
+
+		if firstIndex, exists := seenTaskRefs[trimmedRef]; exists {
+			return newIntakePlanValidationError(
+				taskPath+".ref",
+				fmt.Sprintf("must be unique (duplicates tasks[%d].ref)", firstIndex),
+			)
+		}
+		seenTaskRefs[trimmedRef] = i
+
+		for j, depRef := range task.LocalDependencyRefs {
+			if strings.TrimSpace(depRef) == "" {
+				return newIntakePlanValidationError(
+					fmt.Sprintf("%s.local_dependency_refs[%d]", taskPath, j),
+					"must be non-empty",
+				)
+			}
+		}
+	}
+
 	return nil
 }
 

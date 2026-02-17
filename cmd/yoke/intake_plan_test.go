@@ -344,6 +344,69 @@ func TestValidateIntakePlanForApplyUsesSharedValidation(t *testing.T) {
 	assertPlanValidationError(t, err, "tasks[0].acceptance_criteria", "must contain at least 1 item")
 }
 
+func TestValidateIntakePlanForApplyRequiresTaskRefs(t *testing.T) {
+	t.Parallel()
+
+	err := validateIntakePlanForApply(intakePlan{
+		Epic: validEpic(),
+		Tasks: []intakePlanTask{
+			{
+				Title:              "Task title",
+				Description:        "Task description",
+				AcceptanceCriteria: []string{"One criterion"},
+			},
+		},
+	})
+	assertPlanValidationError(t, err, "tasks[0].ref", "must be non-empty")
+}
+
+func TestValidateIntakePlanForApplyRejectsDuplicateTaskRefs(t *testing.T) {
+	t.Parallel()
+
+	err := validateIntakePlanForApply(intakePlan{
+		Epic: validEpic(),
+		Tasks: []intakePlanTask{
+			{
+				Ref:                "task-a",
+				Title:              "Task A",
+				Description:        "Task A description",
+				AcceptanceCriteria: []string{"A criterion"},
+			},
+			{
+				Ref:                "task-a",
+				Title:              "Task B",
+				Description:        "Task B description",
+				AcceptanceCriteria: []string{"B criterion"},
+			},
+		},
+	})
+	assertPlanValidationError(t, err, "tasks[1].ref", "must be unique (duplicates tasks[0].ref)")
+}
+
+func TestValidateIntakePlanForApplyRejectsEmptyLocalDependencyRef(t *testing.T) {
+	t.Parallel()
+
+	err := validateIntakePlanForApply(intakePlan{
+		Epic: validEpic(),
+		Tasks: []intakePlanTask{
+			{
+				Ref:                "task-a",
+				Title:              "Task A",
+				Description:        "Task A description",
+				AcceptanceCriteria: []string{"A criterion"},
+			},
+			{
+				Ref:                 "task-b",
+				Title:               "Task B",
+				Description:         "Task B description",
+				AcceptanceCriteria:  []string{"B criterion"},
+				LocalDependencyRefs: []string{" "},
+			},
+		},
+	})
+	assertPlanValidationError(t, err, "tasks[1].local_dependency_refs[0]", "must be non-empty")
+}
+
 func assertPlanValidationError(t *testing.T, err error, wantPath, wantReason string) {
 	t.Helper()
 
