@@ -33,6 +33,7 @@ const (
 	epicImprovementRunningLabel  = "yoke:epic-improvement-running"
 	maxSummaryCommentChars       = 12000
 	maxSummaryInputCharsPerPass  = 12000
+	maxClarificationCommentChars = 2000
 )
 
 //go:embed prompts/epic-improvement-cycle.md
@@ -722,11 +723,26 @@ func ensureIssueBranchCheckedOut(issue string) error {
 }
 
 type bdListIssue struct {
-	ID        string   `json:"id"`
-	Title     string   `json:"title"`
-	Status    string   `json:"status"`
-	IssueType string   `json:"issue_type"`
-	Labels    []string `json:"labels"`
+	ID           string   `json:"id"`
+	Title        string   `json:"title"`
+	Status       string   `json:"status"`
+	IssueType    string   `json:"issue_type"`
+	Labels       []string `json:"labels"`
+	CommentCount int      `json:"comment_count"`
+}
+
+type bdComment struct {
+	ID        int    `json:"id"`
+	IssueID   string `json:"issue_id"`
+	Author    string `json:"author"`
+	Text      string `json:"text"`
+	CreatedAt string `json:"created_at"`
+}
+
+type clarificationContext struct {
+	IssueID  string
+	Title    string
+	Comments []bdComment
 }
 
 func firstIssueByStatus(prefix, status string) (string, error) {
@@ -753,6 +769,19 @@ func parseBDListIssuesJSON(raw string) ([]bdListIssue, error) {
 		return nil, fmt.Errorf("parse bd list json: %w", err)
 	}
 	return issues, nil
+}
+
+func parseBDCommentsJSON(raw string) ([]bdComment, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "null" {
+		return nil, nil
+	}
+
+	var comments []bdComment
+	if err := json.Unmarshal([]byte(trimmed), &comments); err != nil {
+		return nil, fmt.Errorf("parse bd comments json: %w", err)
+	}
+	return comments, nil
 }
 
 func firstMatchingIssueID(issues []bdListIssue, prefix, status string) string {
@@ -835,6 +864,11 @@ func listChildIssues(parent string) ([]bdListIssue, error) {
 	return parseBDListIssuesJSON(output)
 }
 
+func listIssueComments(issueID string) ([]bdComment, error) {
+	output := commandCombinedOutput("bd", "comments", issueID, "--json")
+	return parseBDCommentsJSON(output)
+}
+
 func collectDescendantIssues(root string) ([]bdListIssue, error) {
 	visited := map[string]bool{}
 	var descendants []bdListIssue
@@ -865,6 +899,39 @@ func collectDescendantIssues(root string) ([]bdListIssue, error) {
 	}
 
 	return descendants, nil
+}
+
+func collectClarificationContext(rootIssue string) ([]clarificationContext, error) {
+	descendants, err := collectDescendantIssues(rootIssue)
+	if err != nil {
+		return nil, err
+	}
+
+	context := make([]clarificationContext, 0)
+	for _, issue := range descendants {
+		title := strings.ToLower(strings.TrimSpace(issue.Title))
+		if !strings.HasPrefix(title, "clarification needed:") {
+			continue
+		}
+		if issue.CommentCount <= 0 {
+			continue
+		}
+
+		comments, err := listIssueComments(issue.ID)
+		if err != nil {
+			return nil, fmt.Errorf("load comments for %s: %w", issue.ID, err)
+		}
+		if len(comments) == 0 {
+			continue
+		}
+		context = append(context, clarificationContext{
+			IssueID:  issue.ID,
+			Title:    issue.Title,
+			Comments: comments,
+		})
+	}
+
+	return context, nil
 }
 
 func pickEpicChildToClaim(descendants, inProgress, ready []bdListIssue) (string, bool) {
@@ -992,6 +1059,20 @@ func runEpicImprovementCycle(root string, cfg config, epic bdListIssue, passLimi
 		return nil
 	}
 
+	claimNote("Checking for clarification tasks with comments before starting passes.")
+	clarificationContext, err := collectClarificationContext(epic.ID)
+	if err != nil {
+		return err
+	}
+	if len(clarificationContext) == 0 {
+		claimNote("No clarification tasks with comments found.")
+	} else {
+		claimNote(fmt.Sprintf("Found %d clarification task(s) with comments; injecting context into prompts.", len(clarificationContext)))
+		for _, item := range clarificationContext {
+			claimNote(fmt.Sprintf("Loaded clarification context: %s (%d comment(s))", item.IssueID, len(item.Comments)))
+		}
+	}
+
 	claimNote(fmt.Sprintf("Starting epic improvement cycle for %s (%d pass(es)).", epic.ID, passLimit))
 	reportsDir := filepath.Join(root, ".yoke", "epic-improvement-reports", sanitizePathSegment(epic.ID))
 	claimNote("Improvement reports directory: " + reportsDir)
@@ -1012,7 +1093,7 @@ func runEpicImprovementCycle(root string, cfg config, epic bdListIssue, passLimi
 		}
 		claimNote(fmt.Sprintf("Improvement pass %d/%d starting (role=%s, agent=%s).", pass, passLimit, role, agentID))
 
-		prompt := buildEpicImprovementPassPrompt(epic.ID, pass, passLimit, role)
+		prompt := buildEpicImprovementPassPrompt(epic.ID, pass, passLimit, role, clarificationContext)
 		output, runErr := runAgentPrompt(agentID, root, prompt, []string{
 			"ISSUE_ID=" + epic.ID,
 			"ROOT_DIR=" + root,
@@ -1222,16 +1303,48 @@ func (w *linePrefixWriter) Write(p []byte) (int, error) {
 	return written, nil
 }
 
-func buildEpicImprovementPassPrompt(epicID string, pass, total int, role string) string {
+func buildEpicImprovementPassPrompt(epicID string, pass, total int, role string, clarifications []clarificationContext) string {
 	replaced := strings.ReplaceAll(epicImprovementPromptTemplate, "$EPIC_ID", epicID)
+	clarificationBlock := buildClarificationPromptBlock(clarifications)
+	if clarificationBlock == "" {
+		clarificationBlock = "No clarification-task comments were found."
+	}
 	return strings.TrimSpace(fmt.Sprintf(
 		`You are the %s agent for epic %s.
 This is epic improvement pass %d of %d.
+Clarification context (resolved by user comments on "Clarification needed" tasks):
+
+%s
+
 Apply the following improvement protocol exactly and emit the report in the specified report format:
 
 %s`,
-		role, epicID, pass, total, replaced,
+		role, epicID, pass, total, clarificationBlock, replaced,
 	))
+}
+
+func buildClarificationPromptBlock(clarifications []clarificationContext) string {
+	if len(clarifications) == 0 {
+		return ""
+	}
+
+	var body strings.Builder
+	for _, item := range clarifications {
+		body.WriteString(fmt.Sprintf("- %s: %s\n", item.IssueID, strings.TrimSpace(item.Title)))
+		for _, comment := range item.Comments {
+			author := strings.TrimSpace(comment.Author)
+			if author == "" {
+				author = "unknown"
+			}
+			timestamp := strings.TrimSpace(comment.CreatedAt)
+			if timestamp == "" {
+				timestamp = "unknown-time"
+			}
+			text := truncateForPrompt(strings.TrimSpace(comment.Text), maxClarificationCommentChars)
+			body.WriteString(fmt.Sprintf("  - [%s @ %s] %s\n", author, timestamp, text))
+		}
+	}
+	return strings.TrimSpace(body.String())
 }
 
 func buildEpicImprovementSummaryPrompt(epic bdListIssue, reports []epicImprovementPassReport) string {

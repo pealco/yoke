@@ -408,6 +408,24 @@ func TestParseBDListIssuesJSON(t *testing.T) {
 	}
 }
 
+func TestParseBDCommentsJSON(t *testing.T) {
+	t.Parallel()
+
+	raw := `[
+  {"id":1,"issue_id":"bd-a1","author":"Pedro","text":"Answer text","created_at":"2026-01-01T00:00:00Z"}
+]`
+	comments, err := parseBDCommentsJSON(raw)
+	if err != nil {
+		t.Fatalf("parseBDCommentsJSON error: %v", err)
+	}
+	if len(comments) != 1 {
+		t.Fatalf("expected 1 comment, got %d", len(comments))
+	}
+	if comments[0].IssueID != "bd-a1" || comments[0].Text != "Answer text" {
+		t.Fatalf("unexpected comments payload: %#v", comments)
+	}
+}
+
 func TestFirstMatchingIssueID(t *testing.T) {
 	t.Parallel()
 
@@ -605,12 +623,40 @@ func TestRoleForPass(t *testing.T) {
 func TestBuildEpicImprovementPassPrompt(t *testing.T) {
 	t.Parallel()
 
-	prompt := buildEpicImprovementPassPrompt("bd-a1b2", 3, 5, "writer")
+	prompt := buildEpicImprovementPassPrompt("bd-a1b2", 3, 5, "writer", nil)
 	if !contains(prompt, "pass 3 of 5") {
 		t.Fatalf("expected pass metadata in prompt: %s", prompt)
 	}
 	if !contains(prompt, "bd show bd-a1b2") {
 		t.Fatalf("expected epic id replacement in prompt: %s", prompt)
+	}
+	if !contains(prompt, "No clarification-task comments were found.") {
+		t.Fatalf("expected empty clarification marker in prompt: %s", prompt)
+	}
+}
+
+func TestBuildEpicImprovementPassPromptWithClarifications(t *testing.T) {
+	t.Parallel()
+
+	prompt := buildEpicImprovementPassPrompt("bd-a1b2", 1, 2, "writer", []clarificationContext{
+		{
+			IssueID: "bd-a1b2.10",
+			Title:   "Clarification needed: sample",
+			Comments: []bdComment{
+				{
+					Author:    "Pedro",
+					Text:      "Use stdin when piped input is present.",
+					CreatedAt: "2026-02-17T05:53:27Z",
+				},
+			},
+		},
+	})
+
+	if !contains(prompt, "Clarification needed: sample") {
+		t.Fatalf("expected clarification title in prompt: %s", prompt)
+	}
+	if !contains(prompt, "Use stdin when piped input is present.") {
+		t.Fatalf("expected clarification comment text in prompt: %s", prompt)
 	}
 }
 

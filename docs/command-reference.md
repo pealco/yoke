@@ -174,6 +174,7 @@ Behavior:
    - explicit argument, or
    - first issue from `bd list --status open --ready`
 2. if selected issue is an epic:
+   - scans descendant tasks titled `Clarification needed: ...` and loads their comments as clarification context
    - runs an epic improvement cycle (writer/reviewer alternating) using the configured agents
    - pass count defaults to 5 and can be limited with `--improvement-passes`
    - writes pass reports and summary to `.yoke/epic-improvement-reports/<epic-id>/`
