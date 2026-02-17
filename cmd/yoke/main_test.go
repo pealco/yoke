@@ -301,6 +301,94 @@ func TestParseDaemonInterval(t *testing.T) {
 	}
 }
 
+func TestParseClaimArgs(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		args      []string
+		wantIssue string
+		wantPass  int
+		wantErr   string
+	}{
+		{
+			name:      "defaults",
+			args:      nil,
+			wantIssue: "",
+			wantPass:  epicPassCount,
+		},
+		{
+			name:      "issue only",
+			args:      []string{"bd-a1b2"},
+			wantIssue: "bd-a1b2",
+			wantPass:  epicPassCount,
+		},
+		{
+			name:      "limited passes",
+			args:      []string{"bd-a1b2", "--improvement-passes", "2"},
+			wantIssue: "bd-a1b2",
+			wantPass:  2,
+		},
+		{
+			name:      "limited passes without issue",
+			args:      []string{"--improvement-passes", "3"},
+			wantIssue: "",
+			wantPass:  3,
+		},
+		{
+			name:    "missing pass value",
+			args:    []string{"--improvement-passes"},
+			wantErr: "--improvement-passes requires a value",
+		},
+		{
+			name:    "pass value out of range low",
+			args:    []string{"--improvement-passes", "0"},
+			wantErr: "--improvement-passes must be an integer between 1 and 5",
+		},
+		{
+			name:    "pass value out of range high",
+			args:    []string{"--improvement-passes", "6"},
+			wantErr: "--improvement-passes must be an integer between 1 and 5",
+		},
+		{
+			name:    "unknown flag",
+			args:    []string{"--unknown"},
+			wantErr: "unknown claim argument: --unknown",
+		},
+		{
+			name:    "too many positionals",
+			args:    []string{"bd-a1", "bd-a2"},
+			wantErr: "usage: yoke claim [<prefix>-issue-id] [--improvement-passes N]",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gotIssue, gotPass, err := parseClaimArgs(tc.args)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("parseClaimArgs(%v) expected error %q", tc.args, tc.wantErr)
+				}
+				if err.Error() != tc.wantErr {
+					t.Fatalf("parseClaimArgs(%v) error = %q, want %q", tc.args, err.Error(), tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseClaimArgs(%v) unexpected error: %v", tc.args, err)
+			}
+			if gotIssue != tc.wantIssue {
+				t.Fatalf("parseClaimArgs(%v) issue = %q, want %q", tc.args, gotIssue, tc.wantIssue)
+			}
+			if gotPass != tc.wantPass {
+				t.Fatalf("parseClaimArgs(%v) pass limit = %d, want %d", tc.args, gotPass, tc.wantPass)
+			}
+		})
+	}
+}
+
 func TestParseBDListIssuesJSON(t *testing.T) {
 	t.Parallel()
 

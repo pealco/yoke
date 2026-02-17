@@ -160,18 +160,22 @@ yoke daemon --writer-cmd 'echo custom writer' --reviewer-cmd 'echo custom review
 Usage:
 
 ```bash
-yoke claim [<prefix>-issue-id]
+yoke claim [<prefix>-issue-id] [options]
 ```
 
 Purpose:
 - claim and activate a task for implementation
+
+Options:
+- `--improvement-passes <N>`: limit epic improvement passes (1-5, default: 5)
 
 Behavior:
 1. chooses issue:
    - explicit argument, or
    - first issue from `bd list --status open --ready`
 2. if selected issue is an epic:
-   - runs a 5-pass epic improvement cycle (writer/reviewer alternating) using the configured agents
+   - runs an epic improvement cycle (writer/reviewer alternating) using the configured agents
+   - pass count defaults to 5 and can be limited with `--improvement-passes`
    - writes pass reports and summary to `.yoke/epic-improvement-reports/<epic-id>/`
    - posts an agent-generated summary comment to the epic
    - traverses epic descendants
@@ -193,6 +197,7 @@ Examples:
 ```bash
 yoke claim
 yoke claim bd-a1b2
+yoke claim bd-a1b2 --improvement-passes 2
 ```
 
 ## `yoke submit`

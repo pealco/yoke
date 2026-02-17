@@ -27,6 +27,7 @@ const (
 	defaultDaemonPoll = 30 * time.Second
 	reviewQueueLabel  = "yoke:in_review"
 	epicPassCount     = 5
+	minEpicPassCount  = 1
 
 	epicImprovementCompleteLabel = "yoke:epic-improvement-complete"
 	epicImprovementRunningLabel  = "yoke:epic-improvement-running"
@@ -906,7 +907,7 @@ func pickEpicChildToClaim(descendants, inProgress, ready []bdListIssue) (string,
 	return "", true
 }
 
-func resolveClaimIssue(root string, cfg config, issue string) (string, bool, error) {
+func resolveClaimIssue(root string, cfg config, issue string, passLimit int) (string, bool, error) {
 	claimNote("Loading issue details for " + issue)
 	details, err := issueDetails(issue)
 	if err != nil {
@@ -921,8 +922,8 @@ func resolveClaimIssue(root string, cfg config, issue string) (string, bool, err
 		claimNote("Epic is already closed; no child task to claim.")
 		return "", true, nil
 	}
-	claimNote("Issue is an epic; running epic improvement cycle before selecting a child task.")
-	if err := runEpicImprovementCycle(root, cfg, details); err != nil {
+	claimNote(fmt.Sprintf("Issue is an epic; running epic improvement cycle (limit=%d pass(es)) before selecting a child task.", passLimit))
+	if err := runEpicImprovementCycle(root, cfg, details, passLimit); err != nil {
 		return "", false, err
 	}
 	claimNote("Collecting epic descendants for claim selection.")
@@ -979,7 +980,10 @@ type epicImprovementPassReport struct {
 	Output  string
 }
 
-func runEpicImprovementCycle(root string, cfg config, epic bdListIssue) error {
+func runEpicImprovementCycle(root string, cfg config, epic bdListIssue, passLimit int) error {
+	if passLimit < minEpicPassCount || passLimit > epicPassCount {
+		return fmt.Errorf("improvement pass limit must be between %d and %d", minEpicPassCount, epicPassCount)
+	}
 	if strings.TrimSpace(epicImprovementPromptTemplate) == "" {
 		return errors.New("epic improvement prompt template is empty")
 	}
@@ -988,7 +992,7 @@ func runEpicImprovementCycle(root string, cfg config, epic bdListIssue) error {
 		return nil
 	}
 
-	claimNote(fmt.Sprintf("Starting epic improvement cycle for %s (%d passes).", epic.ID, epicPassCount))
+	claimNote(fmt.Sprintf("Starting epic improvement cycle for %s (%d pass(es)).", epic.ID, passLimit))
 	reportsDir := filepath.Join(root, ".yoke", "epic-improvement-reports", sanitizePathSegment(epic.ID))
 	claimNote("Improvement reports directory: " + reportsDir)
 	if err := os.MkdirAll(reportsDir, 0o755); err != nil {
@@ -999,23 +1003,23 @@ func runEpicImprovementCycle(root string, cfg config, epic bdListIssue) error {
 		return err
 	}
 
-	reports := make([]epicImprovementPassReport, 0, epicPassCount)
-	for pass := 1; pass <= epicPassCount; pass++ {
+	reports := make([]epicImprovementPassReport, 0, passLimit)
+	for pass := 1; pass <= passLimit; pass++ {
 		role := roleForPass(pass)
 		agentID, err := agentIDForRole(cfg, role)
 		if err != nil {
 			return err
 		}
-		claimNote(fmt.Sprintf("Improvement pass %d/%d starting (role=%s, agent=%s).", pass, epicPassCount, role, agentID))
+		claimNote(fmt.Sprintf("Improvement pass %d/%d starting (role=%s, agent=%s).", pass, passLimit, role, agentID))
 
-		prompt := buildEpicImprovementPassPrompt(epic.ID, pass, epicPassCount, role)
+		prompt := buildEpicImprovementPassPrompt(epic.ID, pass, passLimit, role)
 		output, runErr := runAgentPrompt(agentID, root, prompt, []string{
 			"ISSUE_ID=" + epic.ID,
 			"ROOT_DIR=" + root,
 			"BD_PREFIX=" + cfg.BDPrefix,
 			"YOKE_ROLE=" + role,
 			"YOKE_EPIC_IMPROVEMENT_PASS=" + strconv.Itoa(pass),
-		}, fmt.Sprintf("[claim][pass %d/%d %s] ", pass, epicPassCount, role))
+		}, fmt.Sprintf("[claim][pass %d/%d %s] ", pass, passLimit, role))
 
 		reportPath := filepath.Join(reportsDir, fmt.Sprintf("pass-%02d-%s.md", pass, role))
 		if err := writeEpicImprovementPassReport(reportPath, epic.ID, pass, role, agentID, output, runErr); err != nil {
@@ -1026,7 +1030,7 @@ func runEpicImprovementCycle(root string, cfg config, epic bdListIssue) error {
 			claimNote(fmt.Sprintf("Improvement pass %d failed; see report: %s", pass, reportPath))
 			return fmt.Errorf("epic improvement pass %d (%s) failed: %w (report: %s)", pass, role, runErr, reportPath)
 		}
-		claimNote(fmt.Sprintf("Improvement pass %d/%d completed.", pass, epicPassCount))
+		claimNote(fmt.Sprintf("Improvement pass %d/%d completed.", pass, passLimit))
 
 		reports = append(reports, epicImprovementPassReport{
 			Pass:    pass,
@@ -1060,7 +1064,7 @@ func runEpicImprovementCycle(root string, cfg config, epic bdListIssue) error {
 	}
 
 	claimNote("Posting improvement summary comment to epic " + epic.ID + ".")
-	comment := formatEpicImprovementSummaryComment(epic, summary, reportsDir)
+	comment := formatEpicImprovementSummaryComment(epic, summary, passLimit, reportsDir)
 	if err := runCommand("bd", "comments", "add", epic.ID, comment); err != nil {
 		return err
 	}
@@ -1292,13 +1296,13 @@ func writeEpicImprovementSummary(path, epicID, agentID, summary string, runErr e
 	return os.WriteFile(path, []byte(body.String()), 0o644)
 }
 
-func formatEpicImprovementSummaryComment(epic bdListIssue, summary, reportsDir string) string {
+func formatEpicImprovementSummaryComment(epic bdListIssue, summary string, passCount int, reportsDir string) string {
 	trimmedSummary := truncateForPrompt(summary, maxSummaryCommentChars)
 	lines := []string{
 		"## Epic Improvement Cycle Complete",
 		"",
 		"- Epic: `" + sanitizeCommentLine(epic.ID) + "`",
-		"- Passes: " + strconv.Itoa(epicPassCount),
+		"- Passes: " + strconv.Itoa(passCount),
 		"- Process: writer/reviewer alternating",
 		"",
 		"### Agent Summary",
@@ -1341,11 +1345,12 @@ func cmdClaim(args []string) error {
 			return nil
 		}
 	}
-
-	if len(args) > 1 {
-		return fmt.Errorf("usage: yoke claim [bd-issue-id]")
-	}
 	claimNote("Starting claim command.")
+	issueArg, improvementPassLimit, err := parseClaimArgs(args)
+	if err != nil {
+		return err
+	}
+	claimNote(fmt.Sprintf("Epic improvement pass limit set to %d.", improvementPassLimit))
 
 	root, err := ensureRepoRoot()
 	if err != nil {
@@ -1362,9 +1367,8 @@ func cmdClaim(args []string) error {
 	}
 	claimNote("Verified required command: bd")
 
-	issue := ""
-	if len(args) == 1 {
-		issue = args[0]
+	issue := issueArg
+	if issue != "" {
 		claimNote("Using explicit issue argument: " + issue)
 	}
 
@@ -1379,7 +1383,7 @@ func cmdClaim(args []string) error {
 
 	requestedIssue := issue
 	claimNote("Resolving target with epic-aware claim logic.")
-	resolvedIssue, epicCompleted, err := resolveClaimIssue(root, cfg, issue)
+	resolvedIssue, epicCompleted, err := resolveClaimIssue(root, cfg, issue, improvementPassLimit)
 	if err != nil {
 		return err
 	}
@@ -1417,6 +1421,37 @@ func cmdClaim(args []string) error {
 	note(fmt.Sprintf("Claimed %s on branch %s", issue, branch))
 	note(fmt.Sprintf("Next: yoke submit %s --done \"...\" --remaining \"...\"", issue))
 	return nil
+}
+
+func parseClaimArgs(args []string) (issue string, improvementPassLimit int, err error) {
+	issue = ""
+	improvementPassLimit = epicPassCount
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch arg {
+		case "--improvement-passes":
+			i++
+			if i >= len(args) {
+				return "", 0, errors.New("--improvement-passes requires a value")
+			}
+			passLimit, convErr := strconv.Atoi(args[i])
+			if convErr != nil || passLimit < minEpicPassCount || passLimit > epicPassCount {
+				return "", 0, fmt.Errorf("--improvement-passes must be an integer between %d and %d", minEpicPassCount, epicPassCount)
+			}
+			improvementPassLimit = passLimit
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return "", 0, fmt.Errorf("unknown claim argument: %s", arg)
+			}
+			if issue != "" {
+				return "", 0, errors.New("usage: yoke claim [<prefix>-issue-id] [--improvement-passes N]")
+			}
+			issue = arg
+		}
+	}
+
+	return issue, improvementPassLimit, nil
 }
 
 func cmdSubmit(args []string) error {
@@ -2596,14 +2631,15 @@ Examples:
 
 func printClaimUsage() {
 	fmt.Print(`Usage:
-  yoke claim [<prefix>-issue-id]
+  yoke claim [<prefix>-issue-id] [options]
 
 Purpose:
   Move an issue into active work and place the repository on the matching branch.
 
 Behavior:
   - If issue id omitted, picks first issue from bd open+ready list.
-  - If issue id is an epic, runs a 5-pass epic improvement cycle (writer/reviewer alternating) before task claim.
+  - If issue id is an epic, runs an epic improvement cycle (writer/reviewer alternating) before task claim.
+  - Improvement cycle pass count defaults to 5 and can be limited with --improvement-passes.
   - Epic improvement reports are saved in .yoke/epic-improvement-reports/<epic-id>/.
   - If issue id is an epic, claims the next ready/in-progress child task in that epic.
   - If an epic has no remaining open child tasks, yoke closes the epic and exits.
@@ -2614,9 +2650,13 @@ Behavior:
 Inputs:
   issue-id    Optional. Explicit issue id (example uses prefix from YOKE_BD_PREFIX).
 
+Options:
+  --improvement-passes N   Limit epic improvement passes (1-5, default 5).
+
 Examples:
   yoke claim
   yoke claim bd-a1b2
+  yoke claim bd-a1b2 --improvement-passes 2
 
 Side effects:
   - bd status transition to in_progress
