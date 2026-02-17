@@ -165,7 +165,7 @@ func cmdInit(args []string) error {
 				return fmt.Errorf("unsupported reviewer agent: %s", args[i])
 			}
 			reviewerOverride = normalized
-		case "--bd-prefix", "--td-prefix":
+		case "--bd-prefix":
 			i++
 			if i >= len(args) {
 				return errors.New("--bd-prefix requires a value")
@@ -1201,11 +1201,6 @@ func loadConfig(root string) (config, error) {
 			cfg.CheckCmd = value
 		case "YOKE_BD_PREFIX":
 			cfg.BDPrefix = value
-		case "YOKE_TD_PREFIX":
-			// Backward compatibility for older config files.
-			if strings.TrimSpace(cfg.BDPrefix) == "" || cfg.BDPrefix == defaultBDPrefix {
-				cfg.BDPrefix = value
-			}
 		case "YOKE_WRITER_AGENT":
 			cfg.WriterAgent = value
 		case "YOKE_WRITER_CMD":
@@ -1946,7 +1941,6 @@ Options:
   --writer-agent codex|claude     Set writer agent explicitly.
   --reviewer-agent codex|claude   Set reviewer agent explicitly.
   --bd-prefix PREFIX              Set bd issue prefix explicitly (default: bd).
-  --td-prefix PREFIX              Deprecated alias for --bd-prefix.
   --no-prompt                     Do not prompt; auto-select detected defaults.
 
 Examples:

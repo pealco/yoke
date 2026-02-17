@@ -104,28 +104,6 @@ YOKE_PR_TEMPLATE=".github/pull_request_template.md"
 	}
 }
 
-func TestLoadConfigLegacyTDPrefix(t *testing.T) {
-	tmp := t.TempDir()
-	cfgPath := filepath.Join(tmp, "config.sh")
-
-	content := `# shellcheck shell=bash
-YOKE_BASE_BRANCH="main"
-YOKE_TD_PREFIX="legacy"
-`
-	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	t.Setenv("YOKE_CONFIG", cfgPath)
-	cfg, err := loadConfig(tmp)
-	if err != nil {
-		t.Fatalf("loadConfig: %v", err)
-	}
-	if cfg.BDPrefix != "legacy" {
-		t.Fatalf("BDPrefix = %q, want legacy", cfg.BDPrefix)
-	}
-}
-
 func TestBranchForIssue(t *testing.T) {
 	t.Parallel()
 
