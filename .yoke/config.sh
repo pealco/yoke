@@ -7,7 +7,7 @@ YOKE_BASE_BRANCH="main"
 YOKE_CHECK_CMD=".yoke/checks.sh"
 
 # Prefix used for bd issue IDs (example: bd-a1b2).
-YOKE_BD_PREFIX="bd"
+YOKE_BD_PREFIX="yoke"
 
 # Selected coding agent for writing (codex or claude).
 YOKE_WRITER_AGENT="codex"
