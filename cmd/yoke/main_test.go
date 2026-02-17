@@ -336,19 +336,25 @@ func TestParseClaimArgs(t *testing.T) {
 			wantPass:  3,
 		},
 		{
+			name:      "skip passes",
+			args:      []string{"--improvement-passes", "0"},
+			wantIssue: "",
+			wantPass:  0,
+		},
+		{
 			name:    "missing pass value",
 			args:    []string{"--improvement-passes"},
 			wantErr: "--improvement-passes requires a value",
 		},
 		{
 			name:    "pass value out of range low",
-			args:    []string{"--improvement-passes", "0"},
-			wantErr: "--improvement-passes must be an integer between 1 and 5",
+			args:    []string{"--improvement-passes", "-1"},
+			wantErr: "--improvement-passes must be an integer between 0 and 5",
 		},
 		{
 			name:    "pass value out of range high",
 			args:    []string{"--improvement-passes", "6"},
-			wantErr: "--improvement-passes must be an integer between 1 and 5",
+			wantErr: "--improvement-passes must be an integer between 0 and 5",
 		},
 		{
 			name:    "unknown flag",
@@ -386,6 +392,14 @@ func TestParseClaimArgs(t *testing.T) {
 				t.Fatalf("parseClaimArgs(%v) pass limit = %d, want %d", tc.args, gotPass, tc.wantPass)
 			}
 		})
+	}
+}
+
+func TestRunEpicImprovementCycleSkipWhenPassLimitZero(t *testing.T) {
+	t.Parallel()
+
+	if err := runEpicImprovementCycle(t.TempDir(), config{}, bdListIssue{ID: "bd-a1b2", IssueType: "epic"}, 0); err != nil {
+		t.Fatalf("runEpicImprovementCycle passLimit=0 unexpected error: %v", err)
 	}
 }
 
