@@ -602,6 +602,36 @@ func TestHasOpenBlockingDependencyEdges(t *testing.T) {
 	}
 }
 
+func TestFilterClaimCandidatesForEpic(t *testing.T) {
+	t.Parallel()
+
+	workItemIDs := map[string]struct{}{
+		"epic.1": {},
+		"epic.2": {},
+	}
+	openDeps := map[string]bool{
+		"epic.2": true,
+	}
+	filtered, skippedBlocked, ignoredOutsideEpic, err := filterClaimCandidatesForEpic([]bdListIssue{
+		{ID: "epic"},
+		{ID: "epic.1"},
+		{ID: "epic.2"},
+	}, workItemIDs, func(issueID string) (bool, error) {
+		return openDeps[issueID], nil
+	})
+	if err != nil {
+		t.Fatalf("filterClaimCandidatesForEpic unexpected error: %v", err)
+	}
+	if ignoredOutsideEpic != 1 {
+		t.Fatalf("expected 1 outside-epic candidate, got %d", ignoredOutsideEpic)
+	}
+	if len(skippedBlocked) != 1 || skippedBlocked[0] != "epic.2" {
+		t.Fatalf("unexpected skipped blocked list: %#v", skippedBlocked)
+	}
+	if len(filtered) != 1 || filtered[0].ID != "epic.1" {
+		t.Fatalf("unexpected filtered candidates: %#v", filtered)
+	}
+}
 func TestFirstMatchingIssueID(t *testing.T) {
 	t.Parallel()
 

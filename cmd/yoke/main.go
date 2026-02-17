@@ -1089,6 +1089,47 @@ func closeClarificationTasksWithComments(rootIssue string) (int, error) {
 	return closed, nil
 }
 
+func collectEpicWorkItemIDs(descendants []bdListIssue) map[string]struct{} {
+	workItemIDs := make(map[string]struct{})
+	for _, issue := range descendants {
+		id := strings.TrimSpace(issue.ID)
+		if id == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(issue.IssueType), "epic") {
+			continue
+		}
+		workItemIDs[id] = struct{}{}
+	}
+	return workItemIDs
+}
+
+func filterClaimCandidatesForEpic(candidates []bdListIssue, workItemIDs map[string]struct{}, hasOpenDeps func(string) (bool, error)) ([]bdListIssue, []string, int, error) {
+	filtered := make([]bdListIssue, 0, len(candidates))
+	skippedBlocked := make([]string, 0)
+	ignoredOutsideEpic := 0
+	for _, candidate := range candidates {
+		id := strings.TrimSpace(candidate.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := workItemIDs[id]; !ok {
+			ignoredOutsideEpic++
+			continue
+		}
+		hasDeps, err := hasOpenDeps(id)
+		if err != nil {
+			return nil, nil, ignoredOutsideEpic, err
+		}
+		if hasDeps {
+			skippedBlocked = append(skippedBlocked, id)
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
+	return filtered, skippedBlocked, ignoredOutsideEpic, nil
+}
+
 func pickEpicChildToClaim(descendants, inProgress, ready []bdListIssue) (string, bool) {
 	workItems := map[string]bdListIssue{}
 	for _, issue := range descendants {
@@ -1169,6 +1210,8 @@ func resolveClaimIssue(root string, cfg config, issue string, passLimit int) (st
 		return "", false, err
 	}
 	claimNote(fmt.Sprintf("Collected %d descendant issue(s).", len(descendants)))
+	workItemIDs := collectEpicWorkItemIDs(descendants)
+	claimNote(fmt.Sprintf("Epic work item candidates: %d", len(workItemIDs)))
 
 	claimNote("Loading in-progress issues for possible resume.")
 	inProgress, err := listIssuesByStatus("in_progress", false)
@@ -1176,22 +1219,12 @@ func resolveClaimIssue(root string, cfg config, issue string, passLimit int) (st
 		return "", false, err
 	}
 	claimNote(fmt.Sprintf("Found %d in-progress issue(s).", len(inProgress)))
-	filteredInProgress := make([]bdListIssue, 0, len(inProgress))
-	skippedInProgress := make([]string, 0)
-	for _, candidate := range inProgress {
-		id := strings.TrimSpace(candidate.ID)
-		if id == "" {
-			continue
-		}
-		hasOpenDeps, err := issueHasOpenBlockingDependencies(id)
-		if err != nil {
-			return "", false, err
-		}
-		if hasOpenDeps {
-			skippedInProgress = append(skippedInProgress, id)
-			continue
-		}
-		filteredInProgress = append(filteredInProgress, candidate)
+	filteredInProgress, skippedInProgress, ignoredInProgress, err := filterClaimCandidatesForEpic(inProgress, workItemIDs, issueHasOpenBlockingDependencies)
+	if err != nil {
+		return "", false, err
+	}
+	if ignoredInProgress > 0 {
+		claimNote(fmt.Sprintf("Ignoring %d in-progress issue(s) outside this epic.", ignoredInProgress))
 	}
 	if len(skippedInProgress) > 0 {
 		claimNote("Skipping blocked in-progress issue(s): " + strings.Join(skippedInProgress, ", "))
@@ -1203,8 +1236,19 @@ func resolveClaimIssue(root string, cfg config, issue string, passLimit int) (st
 		return "", false, err
 	}
 	claimNote(fmt.Sprintf("Found %d ready open issue(s).", len(ready)))
+	filteredReady, skippedReady, ignoredReady, err := filterClaimCandidatesForEpic(ready, workItemIDs, issueHasOpenBlockingDependencies)
+	if err != nil {
+		return "", false, err
+	}
+	if ignoredReady > 0 {
+		claimNote(fmt.Sprintf("Ignoring %d ready issue(s) outside this epic.", ignoredReady))
+	}
+	if len(skippedReady) > 0 {
+		claimNote("Skipping blocked ready issue(s): " + strings.Join(skippedReady, ", "))
+	}
+	claimNote(fmt.Sprintf("Claimable ready open issue(s): %d", len(filteredReady)))
 
-	target, epicComplete := pickEpicChildToClaim(descendants, filteredInProgress, ready)
+	target, epicComplete := pickEpicChildToClaim(descendants, filteredInProgress, filteredReady)
 	if target != "" {
 		claimNote("Selected claimable child task: " + target)
 		return target, false, nil
