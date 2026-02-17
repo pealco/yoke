@@ -876,11 +876,6 @@ func listChildIssues(parent string) ([]bdListIssue, error) {
 	return parseBDListIssuesJSON(output)
 }
 
-func listIssueDependencyEdges(issueID string) ([]bdDependencyEdge, error) {
-	output := commandCombinedOutput("bd", "dep", "list", issueID, "--json")
-	return parseBDDependencyEdgesJSON(output)
-}
-
 func listIssueComments(issueID string) ([]bdComment, error) {
 	output := commandCombinedOutput("bd", "comments", issueID, "--json")
 	return parseBDCommentsJSON(output)
@@ -898,10 +893,29 @@ func hasOpenBlockingDependencies(dependencies []bdListIssue) bool {
 	return false
 }
 
+func hasDependencyTypeEntries(dependencies []bdListIssue) bool {
+	for _, dep := range dependencies {
+		if strings.TrimSpace(dep.DependencyType) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func issueHasOpenBlockingDependencies(issueID string) (bool, error) {
-	dependencyEdges, err := listIssueDependencyEdges(issueID)
-	if err != nil {
-		return false, err
+	output := commandCombinedOutput("bd", "dep", "list", issueID, "--json")
+
+	dependencyIssues, depErr := parseBDListIssuesJSON(output)
+	if depErr == nil && hasDependencyTypeEntries(dependencyIssues) {
+		return hasOpenBlockingDependencies(dependencyIssues), nil
+	}
+
+	dependencyEdges, edgeErr := parseBDDependencyEdgesJSON(output)
+	if edgeErr != nil {
+		if depErr != nil {
+			return false, depErr
+		}
+		return false, edgeErr
 	}
 	return hasOpenBlockingDependencyEdges(issueID, dependencyEdges, issueStatus)
 }

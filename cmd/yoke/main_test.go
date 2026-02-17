@@ -559,6 +559,22 @@ func TestHasOpenBlockingDependencies(t *testing.T) {
 	}
 }
 
+func TestHasDependencyTypeEntries(t *testing.T) {
+	t.Parallel()
+
+	if hasDependencyTypeEntries([]bdListIssue{
+		{ID: "bd-a1", Status: "open"},
+	}) {
+		t.Fatalf("did not expect dependency-type detection without dependency_type values")
+	}
+
+	if !hasDependencyTypeEntries([]bdListIssue{
+		{ID: "bd-a1", Status: "open", DependencyType: "blocks"},
+	}) {
+		t.Fatalf("expected dependency-type detection when dependency_type is present")
+	}
+}
+
 func TestHasOpenBlockingDependencyEdges(t *testing.T) {
 	t.Parallel()
 
