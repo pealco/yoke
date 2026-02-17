@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -440,6 +441,45 @@ func TestParseBDCommentsJSON(t *testing.T) {
 	}
 }
 
+func TestParseBDDependencyEdgesJSON(t *testing.T) {
+	t.Parallel()
+
+	edgeListRaw := `[
+		{"issue_id":"bd-a1","depends_on_id":"bd-a2","type":"blocks"},
+		{"issue_id":"bd-a1","depends_on_id":"bd-a3","type":"parent-child"}
+	]`
+	edges, err := parseBDDependencyEdgesJSON(edgeListRaw)
+	if err != nil {
+		t.Fatalf("parseBDDependencyEdgesJSON edge list error: %v", err)
+	}
+	if len(edges) != 2 {
+		t.Fatalf("expected 2 edges from edge list, got %d", len(edges))
+	}
+	if edges[0].IssueID != "bd-a1" || edges[0].DependsOnID != "bd-a2" || edges[0].Type != "blocks" {
+		t.Fatalf("unexpected first edge payload: %#v", edges[0])
+	}
+
+	issueListRaw := `[
+		{
+			"id":"bd-a1",
+			"dependencies":[
+				{"depends_on_id":"bd-a2","type":"blocks"},
+				{"depends_on_id":"bd-a3","type":"parent-child"}
+			]
+		}
+	]`
+	edges, err = parseBDDependencyEdgesJSON(issueListRaw)
+	if err != nil {
+		t.Fatalf("parseBDDependencyEdgesJSON issue payload error: %v", err)
+	}
+	if len(edges) != 2 {
+		t.Fatalf("expected 2 edges from issue payload, got %d", len(edges))
+	}
+	if edges[0].IssueID != "bd-a1" || edges[0].DependsOnID != "bd-a2" || edges[0].Type != "blocks" {
+		t.Fatalf("unexpected first issue-derived edge payload: %#v", edges[0])
+	}
+}
+
 func TestIsClarificationNeededTitle(t *testing.T) {
 	t.Parallel()
 
@@ -516,6 +556,49 @@ func TestHasOpenBlockingDependencies(t *testing.T) {
 		{ID: "bd-a1", DependencyType: "blocks", Status: "blocked", Labels: []string{reviewQueueLabel}},
 	}) {
 		t.Fatalf("expected in-review blocker dependency to be considered unmet")
+	}
+}
+
+func TestHasOpenBlockingDependencyEdges(t *testing.T) {
+	t.Parallel()
+
+	statuses := map[string]string{
+		"bd-a2": "open",
+		"bd-a3": "closed",
+	}
+	lookupCalls := 0
+	statusLookup := func(issueID string) (string, error) {
+		lookupCalls++
+		status, ok := statuses[issueID]
+		if !ok {
+			return "", errors.New("missing issue status")
+		}
+		return status, nil
+	}
+
+	hasOpen, err := hasOpenBlockingDependencyEdges("bd-a1", []bdDependencyEdge{
+		{IssueID: "bd-a1", DependsOnID: "bd-a3", Type: "blocks"},
+		{IssueID: "bd-a1", DependsOnID: "bd-a2", Type: "blocks"},
+		{IssueID: "bd-a1", DependsOnID: "bd-a4", Type: "parent-child"},
+	}, statusLookup)
+	if err != nil {
+		t.Fatalf("hasOpenBlockingDependencyEdges unexpected error: %v", err)
+	}
+	if !hasOpen {
+		t.Fatalf("expected open blocking dependency to be detected")
+	}
+	if lookupCalls != 2 {
+		t.Fatalf("expected 2 status lookups, got %d", lookupCalls)
+	}
+
+	hasOpen, err = hasOpenBlockingDependencyEdges("bd-a1", []bdDependencyEdge{
+		{IssueID: "bd-a1", DependsOnID: "bd-a3", Type: "blocks"},
+	}, statusLookup)
+	if err != nil {
+		t.Fatalf("hasOpenBlockingDependencyEdges all-closed unexpected error: %v", err)
+	}
+	if hasOpen {
+		t.Fatalf("did not expect closed blockers to be considered open")
 	}
 }
 

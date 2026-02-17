@@ -732,6 +732,17 @@ type bdListIssue struct {
 	DependencyType string   `json:"dependency_type"`
 }
 
+type bdDependencyEdge struct {
+	IssueID     string `json:"issue_id"`
+	DependsOnID string `json:"depends_on_id"`
+	Type        string `json:"type"`
+}
+
+type bdIssueWithDependencies struct {
+	ID           string             `json:"id"`
+	Dependencies []bdDependencyEdge `json:"dependencies"`
+}
+
 type bdComment struct {
 	ID        int    `json:"id"`
 	IssueID   string `json:"issue_id"`
@@ -865,9 +876,9 @@ func listChildIssues(parent string) ([]bdListIssue, error) {
 	return parseBDListIssuesJSON(output)
 }
 
-func listIssueDependencies(issueID string) ([]bdListIssue, error) {
+func listIssueDependencyEdges(issueID string) ([]bdDependencyEdge, error) {
 	output := commandCombinedOutput("bd", "dep", "list", issueID, "--json")
-	return parseBDListIssuesJSON(output)
+	return parseBDDependencyEdgesJSON(output)
 }
 
 func listIssueComments(issueID string) ([]bdComment, error) {
@@ -888,11 +899,99 @@ func hasOpenBlockingDependencies(dependencies []bdListIssue) bool {
 }
 
 func issueHasOpenBlockingDependencies(issueID string) (bool, error) {
-	dependencies, err := listIssueDependencies(issueID)
+	dependencyEdges, err := listIssueDependencyEdges(issueID)
 	if err != nil {
 		return false, err
 	}
-	return hasOpenBlockingDependencies(dependencies), nil
+	return hasOpenBlockingDependencyEdges(issueID, dependencyEdges, issueStatus)
+}
+
+func hasOpenBlockingDependencyEdges(issueID string, edges []bdDependencyEdge, statusLookup func(string) (string, error)) (bool, error) {
+	normalizedIssueID := strings.TrimSpace(issueID)
+	statusByIssueID := make(map[string]string)
+	for _, edge := range edges {
+		if !strings.EqualFold(strings.TrimSpace(edge.Type), "blocks") {
+			continue
+		}
+		edgeIssueID := strings.TrimSpace(edge.IssueID)
+		if edgeIssueID != "" && normalizedIssueID != "" && !strings.EqualFold(edgeIssueID, normalizedIssueID) {
+			continue
+		}
+		blockerID := strings.TrimSpace(edge.DependsOnID)
+		if blockerID == "" {
+			continue
+		}
+		status, ok := statusByIssueID[blockerID]
+		if !ok {
+			resolvedStatus, err := statusLookup(blockerID)
+			if err != nil {
+				return false, err
+			}
+			status = resolvedStatus
+			statusByIssueID[blockerID] = status
+		}
+		if status != "closed" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func parseBDDependencyEdgesJSON(raw string) ([]bdDependencyEdge, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "null" {
+		return nil, nil
+	}
+
+	var edgePayload []bdDependencyEdge
+	if err := json.Unmarshal([]byte(trimmed), &edgePayload); err == nil {
+		edges := filterValidDependencyEdges(edgePayload)
+		if len(edges) > 0 {
+			return edges, nil
+		}
+	}
+
+	var issuePayload []bdIssueWithDependencies
+	if err := json.Unmarshal([]byte(trimmed), &issuePayload); err != nil {
+		return nil, fmt.Errorf("parse bd dep list json: %w", err)
+	}
+
+	edges := make([]bdDependencyEdge, 0)
+	for _, issue := range issuePayload {
+		for _, dep := range issue.Dependencies {
+			edge := bdDependencyEdge{
+				IssueID:     strings.TrimSpace(dep.IssueID),
+				DependsOnID: strings.TrimSpace(dep.DependsOnID),
+				Type:        strings.TrimSpace(dep.Type),
+			}
+			if edge.IssueID == "" {
+				edge.IssueID = strings.TrimSpace(issue.ID)
+			}
+			if edge.IssueID == "" || edge.DependsOnID == "" || edge.Type == "" {
+				continue
+			}
+			edges = append(edges, edge)
+		}
+	}
+
+	return edges, nil
+}
+
+func filterValidDependencyEdges(edges []bdDependencyEdge) []bdDependencyEdge {
+	valid := make([]bdDependencyEdge, 0, len(edges))
+	for _, edge := range edges {
+		if strings.TrimSpace(edge.IssueID) == "" {
+			continue
+		}
+		if strings.TrimSpace(edge.DependsOnID) == "" {
+			continue
+		}
+		if strings.TrimSpace(edge.Type) == "" {
+			continue
+		}
+		valid = append(valid, edge)
+	}
+	return valid
 }
 
 func collectDescendantIssues(root string) ([]bdListIssue, error) {
