@@ -648,6 +648,7 @@ func TestFilterClaimCandidatesForEpic(t *testing.T) {
 		t.Fatalf("unexpected filtered candidates: %#v", filtered)
 	}
 }
+
 func TestFirstMatchingIssueID(t *testing.T) {
 	t.Parallel()
 
