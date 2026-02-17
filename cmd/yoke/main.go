@@ -623,12 +623,18 @@ func runDaemonRoleCommand(role, issue, shellCommand, worktreeRoot, mainRoot, bdP
 	augmentedCommand := daemonCommandWithExtraWritableDir(shellCommand)
 	note(fmt.Sprintf("Daemon running %s command for %s", role, issue))
 	cmd := exec.Command("bash", "-lc", augmentedCommand)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	filteredOutput := newDaemonLogFilterWriter(os.Stdout)
+	cmd.Stdout = filteredOutput
+	cmd.Stderr = filteredOutput
 	cmd.Dir = worktreeRoot
 	cmd.Env = daemonCommandEnv(os.Environ(), issue, worktreeRoot, mainRoot, bdPrefix, role)
-	if err := cmd.Run(); err != nil {
-		return err
+	runErr := cmd.Run()
+	flushErr := filteredOutput.Flush()
+	if runErr != nil {
+		return runErr
+	}
+	if flushErr != nil {
+		return flushErr
 	}
 
 	currentStatus, err := issueStatus(issue)
@@ -710,6 +716,157 @@ func daemonCommandWithExtraWritableDir(shellCommand string) string {
 		return "codex exec --add-dir \"$YOKE_MAIN_ROOT\""
 	}
 	return shellCommand
+}
+
+type daemonLogFilterWriter struct {
+	dst         io.Writer
+	buf         bytes.Buffer
+	inDiffFence bool
+	inRawDiff   bool
+	inRawHunk   bool
+	mu          sync.Mutex
+}
+
+func newDaemonLogFilterWriter(dst io.Writer) *daemonLogFilterWriter {
+	return &daemonLogFilterWriter{dst: dst}
+}
+
+func (w *daemonLogFilterWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	total := len(p)
+	for len(p) > 0 {
+		newline := bytes.IndexByte(p, '\n')
+		if newline < 0 {
+			_, err := w.buf.Write(p)
+			return total, err
+		}
+		_, _ = w.buf.Write(p[:newline])
+		if err := w.processBufferedLine(true); err != nil {
+			return total, err
+		}
+		p = p[newline+1:]
+	}
+	return total, nil
+}
+
+func (w *daemonLogFilterWriter) Flush() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.buf.Len() == 0 {
+		return nil
+	}
+	return w.processBufferedLine(false)
+}
+
+func (w *daemonLogFilterWriter) processBufferedLine(withNewline bool) error {
+	raw := strings.TrimSuffix(w.buf.String(), "\r")
+	w.buf.Reset()
+
+	suppress, reprocess := w.shouldSuppressLine(raw)
+	if reprocess {
+		suppress, _ = w.shouldSuppressLine(raw)
+	}
+	if suppress {
+		return nil
+	}
+
+	if withNewline {
+		_, err := io.WriteString(w.dst, raw+"\n")
+		return err
+	}
+	_, err := io.WriteString(w.dst, raw)
+	return err
+}
+
+func (w *daemonLogFilterWriter) shouldSuppressLine(raw string) (suppress bool, reprocess bool) {
+	if strings.Contains(raw, "state db missing rollout path for thread") {
+		return true, false
+	}
+
+	trimmed := strings.TrimSpace(raw)
+	lowerTrimmed := strings.ToLower(trimmed)
+	if w.inDiffFence {
+		if strings.HasPrefix(trimmed, "```") {
+			w.inDiffFence = false
+		}
+		return true, false
+	}
+	if strings.HasPrefix(lowerTrimmed, "```diff") {
+		w.inDiffFence = true
+		return true, false
+	}
+
+	if w.inRawDiff {
+		if raw == "" {
+			w.inRawDiff = false
+			w.inRawHunk = false
+			return false, true
+		}
+		switch {
+		case isRawDiffMetadataLine(raw):
+			if strings.HasPrefix(raw, "@@") {
+				w.inRawHunk = true
+			}
+			return true, false
+		case w.inRawHunk && isRawDiffHunkLine(raw):
+			return true, false
+		default:
+			w.inRawDiff = false
+			w.inRawHunk = false
+			return false, true
+		}
+	}
+
+	if isRawDiffStartLine(raw) {
+		w.inRawDiff = true
+		w.inRawHunk = strings.HasPrefix(raw, "@@")
+		return true, false
+	}
+
+	return false, false
+}
+
+func isRawDiffStartLine(line string) bool {
+	return strings.HasPrefix(line, "diff --git ") ||
+		strings.HasPrefix(line, "--- a/") ||
+		strings.HasPrefix(line, "+++ b/") ||
+		strings.HasPrefix(line, "@@")
+}
+
+func isRawDiffMetadataLine(line string) bool {
+	prefixes := []string{
+		"diff --git ",
+		"index ",
+		"--- ",
+		"+++ ",
+		"@@",
+		"new file mode ",
+		"deleted file mode ",
+		"old mode ",
+		"new mode ",
+		"similarity index ",
+		"rename from ",
+		"rename to ",
+		"Binary files ",
+		"GIT binary patch",
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRawDiffHunkLine(line string) bool {
+	if strings.HasPrefix(line, "\\ No newline at end of file") {
+		return true
+	}
+	return strings.HasPrefix(line, "+") ||
+		strings.HasPrefix(line, "-") ||
+		strings.HasPrefix(line, " ")
 }
 
 func notifyDaemonMaxIterationsReached(prefix string, maxIterations int) error {

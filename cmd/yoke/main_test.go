@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -998,6 +999,77 @@ func TestAppendOrPrependPath(t *testing.T) {
 	}
 	if !strings.HasPrefix(pathValue, "/tmp/work/bin"+string(os.PathListSeparator)+"/tmp/main/bin"+string(os.PathListSeparator)+"/usr/bin") {
 		t.Fatalf("unexpected PATH value %q", pathValue)
+	}
+}
+
+func TestDaemonLogFilterSuppressesRolloutNoise(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	w := newDaemonLogFilterWriter(&out)
+	_, err := w.Write([]byte("keep-one\n2026-02-17T08:00:14Z ERROR codex_core::rollout::list: state db missing rollout path for thread 123\nkeep-two\n"))
+	if err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("flush failed: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "keep-one\n") || !strings.Contains(got, "keep-two\n") {
+		t.Fatalf("expected non-noise lines to remain, got %q", got)
+	}
+	if strings.Contains(got, "state db missing rollout path for thread") {
+		t.Fatalf("expected rollout noise to be suppressed, got %q", got)
+	}
+}
+
+func TestDaemonLogFilterSuppressesMarkdownDiffFence(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	w := newDaemonLogFilterWriter(&out)
+	input := "before\n```diff\n-old\n+new\n```\nafter\n"
+	if _, err := w.Write([]byte(input)); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("flush failed: %v", err)
+	}
+
+	got := out.String()
+	if got != "before\nafter\n" {
+		t.Fatalf("unexpected filtered output: %q", got)
+	}
+}
+
+func TestDaemonLogFilterSuppressesRawGitDiff(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	w := newDaemonLogFilterWriter(&out)
+	input := strings.Join([]string{
+		"before",
+		"diff --git a/file.txt b/file.txt",
+		"index 1111111..2222222 100644",
+		"--- a/file.txt",
+		"+++ b/file.txt",
+		"@@ -1 +1 @@",
+		"-old",
+		"+new",
+		"after",
+		"",
+	}, "\n")
+	if _, err := w.Write([]byte(input)); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("flush failed: %v", err)
+	}
+
+	got := out.String()
+	if got != "before\nafter\n" {
+		t.Fatalf("unexpected filtered output: %q", got)
 	}
 }
 
