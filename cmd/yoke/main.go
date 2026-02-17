@@ -581,7 +581,7 @@ func runDaemonIteration(root string, cfg config, writerCmd, reviewerCmd string) 
 		if err != nil {
 			return "", err
 		}
-		if err := runDaemonRoleCommand("reviewer", reviewable, reviewerCmd, worktreePath, cfg.BDPrefix); err != nil {
+		if err := runDaemonRoleCommand("reviewer", reviewable, reviewerCmd, worktreePath, root, cfg.BDPrefix); err != nil {
 			return "", err
 		}
 		return "reviewed " + reviewable, nil
@@ -596,7 +596,7 @@ func runDaemonIteration(root string, cfg config, writerCmd, reviewerCmd string) 
 		if err != nil {
 			return "", err
 		}
-		if err := runDaemonRoleCommand("writer", inProgress, writerCmd, worktreePath, cfg.BDPrefix); err != nil {
+		if err := runDaemonRoleCommand("writer", inProgress, writerCmd, worktreePath, root, cfg.BDPrefix); err != nil {
 			return "", err
 		}
 		return "wrote " + inProgress, nil
@@ -614,23 +614,19 @@ func runDaemonIteration(root string, cfg config, writerCmd, reviewerCmd string) 
 	return "idle", nil
 }
 
-func runDaemonRoleCommand(role, issue, shellCommand, root, bdPrefix string) error {
+func runDaemonRoleCommand(role, issue, shellCommand, worktreeRoot, mainRoot, bdPrefix string) error {
 	previousStatus, err := issueStatus(issue)
 	if err != nil {
 		return err
 	}
 
+	augmentedCommand := daemonCommandWithExtraWritableDir(shellCommand)
 	note(fmt.Sprintf("Daemon running %s command for %s", role, issue))
-	cmd := exec.Command("bash", "-lc", shellCommand)
+	cmd := exec.Command("bash", "-lc", augmentedCommand)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(),
-		"ISSUE_ID="+issue,
-		"ROOT_DIR="+root,
-		"BD_PREFIX="+bdPrefix,
-		"YOKE_ROLE="+role,
-	)
+	cmd.Dir = worktreeRoot
+	cmd.Env = daemonCommandEnv(os.Environ(), issue, worktreeRoot, mainRoot, bdPrefix, role)
 	if err := cmd.Run(); err != nil {
 		return err
 	}
@@ -645,6 +641,75 @@ func runDaemonRoleCommand(role, issue, shellCommand, root, bdPrefix string) erro
 
 	note(fmt.Sprintf("Daemon observed %s status transition: %s -> %s", issue, previousStatus, currentStatus))
 	return nil
+}
+
+func daemonCommandEnv(base []string, issue, worktreeRoot, mainRoot, bdPrefix, role string) []string {
+	env := append([]string{}, base...)
+	env = append(env,
+		"ISSUE_ID="+issue,
+		"ROOT_DIR="+worktreeRoot,
+		"YOKE_MAIN_ROOT="+mainRoot,
+		"BD_PREFIX="+bdPrefix,
+		"YOKE_ROLE="+role,
+	)
+	binDirs := []string{
+		filepath.Join(worktreeRoot, "bin"),
+		filepath.Join(mainRoot, "bin"),
+	}
+	env = appendOrPrependPath(env, binDirs...)
+	return env
+}
+
+func appendOrPrependPath(env []string, entries ...string) []string {
+	filtered := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if strings.TrimSpace(entry) == "" {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	if len(filtered) == 0 {
+		return env
+	}
+
+	pathIndex := -1
+	pathValue := ""
+	for i, item := range env {
+		if strings.HasPrefix(item, "PATH=") {
+			pathIndex = i
+			pathValue = strings.TrimPrefix(item, "PATH=")
+			break
+		}
+	}
+	joined := strings.Join(filtered, string(os.PathListSeparator))
+	if strings.TrimSpace(pathValue) != "" {
+		joined = joined + string(os.PathListSeparator) + pathValue
+	}
+	if pathIndex >= 0 {
+		env[pathIndex] = "PATH=" + joined
+		return env
+	}
+	return append(env, "PATH="+joined)
+}
+
+func daemonCommandWithExtraWritableDir(shellCommand string) string {
+	trimmed := strings.TrimSpace(shellCommand)
+	if trimmed == "" {
+		return shellCommand
+	}
+	if !strings.HasPrefix(trimmed, "codex ") {
+		return shellCommand
+	}
+	if strings.Contains(trimmed, "--add-dir") {
+		return shellCommand
+	}
+	if strings.HasPrefix(trimmed, "codex exec ") {
+		return strings.Replace(trimmed, "codex exec ", "codex exec --add-dir \"$YOKE_MAIN_ROOT\" ", 1)
+	}
+	if trimmed == "codex exec" {
+		return "codex exec --add-dir \"$YOKE_MAIN_ROOT\""
+	}
+	return shellCommand
 }
 
 func notifyDaemonMaxIterationsReached(prefix string, maxIterations int) error {
@@ -2050,7 +2115,7 @@ func cmdSubmit(args []string) error {
 			printSubmitUsage()
 			return nil
 		default:
-			if looksLikeIssueID(arg, cfg.BDPrefix) {
+			if looksLikeIssueID(arg, cfg.BDPrefix) || looksLikeIssueIDAnyPrefix(arg) {
 				if issue != "" {
 					return errors.New("multiple issue ids provided")
 				}
@@ -2166,7 +2231,7 @@ func cmdReview(args []string) error {
 			printReviewUsage()
 			return nil
 		default:
-			if looksLikeIssueID(arg, cfg.BDPrefix) {
+			if looksLikeIssueID(arg, cfg.BDPrefix) || looksLikeIssueIDAnyPrefix(arg) {
 				if issue != "" {
 					return errors.New("multiple issue ids provided")
 				}
@@ -2698,7 +2763,13 @@ func extractIssueIDAnyPrefix(s string) string {
 
 func looksLikeIssueID(value, prefix string) bool {
 	pattern := issuePatternForPrefix(prefix)
-	return pattern.FindString(strings.ToLower(value)) == strings.ToLower(value)
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	return pattern.FindString(normalized) == normalized
+}
+
+func looksLikeIssueIDAnyPrefix(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	return anyIssuePattern.FindString(normalized) == normalized
 }
 
 func nextIssueID(prefix string) string {
@@ -3152,7 +3223,7 @@ Command contract:
   - Writer command comes from YOKE_WRITER_CMD (or --writer-cmd override).
   - Reviewer command comes from YOKE_REVIEW_CMD (or --reviewer-cmd override).
   - Both run with env vars:
-      ISSUE_ID, ROOT_DIR, BD_PREFIX, YOKE_ROLE
+      ISSUE_ID, ROOT_DIR, YOKE_MAIN_ROOT, BD_PREFIX, YOKE_ROLE
   - Commands must transition bd workflow state (writer -> submit/review queue, reviewer -> close or in_progress).
     If status does not change, daemon exits with an error to avoid infinite loops.
 

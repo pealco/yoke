@@ -304,6 +304,20 @@ func TestLooksLikeIssueID(t *testing.T) {
 	}
 }
 
+func TestLooksLikeIssueIDAnyPrefix(t *testing.T) {
+	t.Parallel()
+
+	if !looksLikeIssueIDAnyPrefix("yoke-3kg.1") {
+		t.Fatalf("expected yoke-3kg.1 to match issue pattern")
+	}
+	if !looksLikeIssueIDAnyPrefix("bd-a1b2") {
+		t.Fatalf("expected bd-a1b2 to match issue pattern")
+	}
+	if looksLikeIssueIDAnyPrefix("plaintext") {
+		t.Fatalf("did not expect non-issue value to match issue pattern")
+	}
+}
+
 func TestIssueOrNone(t *testing.T) {
 	t.Parallel()
 
@@ -929,6 +943,61 @@ func TestRoleForPass(t *testing.T) {
 	}
 	if got := roleForPass(5); got != "writer" {
 		t.Fatalf("roleForPass(5) = %q", got)
+	}
+}
+
+func TestDaemonCommandWithExtraWritableDir(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "adds codex exec add-dir",
+			input: `codex exec --full-auto --cd "$ROOT_DIR" "do work"`,
+			want:  `codex exec --add-dir "$YOKE_MAIN_ROOT" --full-auto --cd "$ROOT_DIR" "do work"`,
+		},
+		{
+			name:  "keeps existing add-dir",
+			input: `codex exec --add-dir "/tmp" --full-auto "do work"`,
+			want:  `codex exec --add-dir "/tmp" --full-auto "do work"`,
+		},
+		{
+			name:  "non codex command unchanged",
+			input: `echo "hello"`,
+			want:  `echo "hello"`,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := daemonCommandWithExtraWritableDir(tc.input); got != tc.want {
+				t.Fatalf("daemonCommandWithExtraWritableDir(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAppendOrPrependPath(t *testing.T) {
+	t.Parallel()
+
+	got := appendOrPrependPath([]string{"A=1", "PATH=/usr/bin"}, "/tmp/work/bin", "/tmp/main/bin")
+	pathValue := ""
+	for _, item := range got {
+		if strings.HasPrefix(item, "PATH=") {
+			pathValue = strings.TrimPrefix(item, "PATH=")
+			break
+		}
+	}
+	if pathValue == "" {
+		t.Fatalf("PATH not found in env: %#v", got)
+	}
+	if !strings.HasPrefix(pathValue, "/tmp/work/bin"+string(os.PathListSeparator)+"/tmp/main/bin"+string(os.PathListSeparator)+"/usr/bin") {
+		t.Fatalf("unexpected PATH value %q", pathValue)
 	}
 }
 

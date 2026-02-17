@@ -142,6 +142,7 @@ Execution contract:
 - both receive env vars:
   - `ISSUE_ID`
   - `ROOT_DIR`
+  - `YOKE_MAIN_ROOT`
   - `BD_PREFIX`
   - `YOKE_ROLE`
 - command must advance issue status; if status is unchanged, daemon exits with an error to prevent infinite loops
