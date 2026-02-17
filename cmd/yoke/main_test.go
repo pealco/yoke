@@ -476,6 +476,35 @@ func TestClarificationTaskReadyForAutoClose(t *testing.T) {
 	}
 }
 
+func TestHasOpenBlockingDependencies(t *testing.T) {
+	t.Parallel()
+
+	if !hasOpenBlockingDependencies([]bdListIssue{
+		{ID: "bd-a1", DependencyType: "blocks", Status: "open"},
+	}) {
+		t.Fatalf("expected open blocks dependency to be considered unmet")
+	}
+
+	if hasOpenBlockingDependencies([]bdListIssue{
+		{ID: "bd-a1", DependencyType: "parent-child", Status: "open"},
+	}) {
+		t.Fatalf("did not expect parent-child dependency to be treated as blocker")
+	}
+
+	if hasOpenBlockingDependencies([]bdListIssue{
+		{ID: "bd-a1", DependencyType: "blocks", Status: "closed"},
+		{ID: "bd-a2", DependencyType: "blocks", Status: "closed"},
+	}) {
+		t.Fatalf("did not expect all-closed blockers to be considered unmet")
+	}
+
+	if !hasOpenBlockingDependencies([]bdListIssue{
+		{ID: "bd-a1", DependencyType: "blocks", Status: "blocked", Labels: []string{reviewQueueLabel}},
+	}) {
+		t.Fatalf("expected in-review blocker dependency to be considered unmet")
+	}
+}
+
 func TestFirstMatchingIssueID(t *testing.T) {
 	t.Parallel()
 

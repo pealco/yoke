@@ -179,6 +179,7 @@ Behavior:
    - runs an epic improvement cycle (writer/reviewer alternating) using the configured agents
    - pass count defaults to 5 and can be limited with `--improvement-passes`
    - auto-closes clarification tasks that have comments (`bd close --reason clarified-by-comment`)
+   - skips any in-progress child task that still has unmet `blocks` dependencies
    - writes pass reports and summary to `.yoke/epic-improvement-reports/<epic-id>/`
    - posts an agent-generated summary comment to the epic
    - traverses epic descendants

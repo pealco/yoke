@@ -723,12 +723,13 @@ func ensureIssueBranchCheckedOut(issue string) error {
 }
 
 type bdListIssue struct {
-	ID           string   `json:"id"`
-	Title        string   `json:"title"`
-	Status       string   `json:"status"`
-	IssueType    string   `json:"issue_type"`
-	Labels       []string `json:"labels"`
-	CommentCount int      `json:"comment_count"`
+	ID             string   `json:"id"`
+	Title          string   `json:"title"`
+	Status         string   `json:"status"`
+	IssueType      string   `json:"issue_type"`
+	Labels         []string `json:"labels"`
+	CommentCount   int      `json:"comment_count"`
+	DependencyType string   `json:"dependency_type"`
 }
 
 type bdComment struct {
@@ -864,9 +865,34 @@ func listChildIssues(parent string) ([]bdListIssue, error) {
 	return parseBDListIssuesJSON(output)
 }
 
+func listIssueDependencies(issueID string) ([]bdListIssue, error) {
+	output := commandCombinedOutput("bd", "dep", "list", issueID, "--json")
+	return parseBDListIssuesJSON(output)
+}
+
 func listIssueComments(issueID string) ([]bdComment, error) {
 	output := commandCombinedOutput("bd", "comments", issueID, "--json")
 	return parseBDCommentsJSON(output)
+}
+
+func hasOpenBlockingDependencies(dependencies []bdListIssue) bool {
+	for _, dep := range dependencies {
+		if !strings.EqualFold(strings.TrimSpace(dep.DependencyType), "blocks") {
+			continue
+		}
+		if workflowStatusForIssue(dep) != "closed" {
+			return true
+		}
+	}
+	return false
+}
+
+func issueHasOpenBlockingDependencies(issueID string) (bool, error) {
+	dependencies, err := listIssueDependencies(issueID)
+	if err != nil {
+		return false, err
+	}
+	return hasOpenBlockingDependencies(dependencies), nil
 }
 
 func collectDescendantIssues(root string) ([]bdListIssue, error) {
@@ -1047,6 +1073,27 @@ func resolveClaimIssue(root string, cfg config, issue string, passLimit int) (st
 		return "", false, err
 	}
 	claimNote(fmt.Sprintf("Found %d in-progress issue(s).", len(inProgress)))
+	filteredInProgress := make([]bdListIssue, 0, len(inProgress))
+	skippedInProgress := make([]string, 0)
+	for _, candidate := range inProgress {
+		id := strings.TrimSpace(candidate.ID)
+		if id == "" {
+			continue
+		}
+		hasOpenDeps, err := issueHasOpenBlockingDependencies(id)
+		if err != nil {
+			return "", false, err
+		}
+		if hasOpenDeps {
+			skippedInProgress = append(skippedInProgress, id)
+			continue
+		}
+		filteredInProgress = append(filteredInProgress, candidate)
+	}
+	if len(skippedInProgress) > 0 {
+		claimNote("Skipping blocked in-progress issue(s): " + strings.Join(skippedInProgress, ", "))
+	}
+	claimNote(fmt.Sprintf("Claimable in-progress issue(s): %d", len(filteredInProgress)))
 	claimNote("Loading ready open issues for fallback selection.")
 	ready, err := listIssuesByStatus("open", true)
 	if err != nil {
@@ -1054,7 +1101,7 @@ func resolveClaimIssue(root string, cfg config, issue string, passLimit int) (st
 	}
 	claimNote(fmt.Sprintf("Found %d ready open issue(s).", len(ready)))
 
-	target, epicComplete := pickEpicChildToClaim(descendants, inProgress, ready)
+	target, epicComplete := pickEpicChildToClaim(descendants, filteredInProgress, ready)
 	if target != "" {
 		claimNote("Selected claimable child task: " + target)
 		return target, false, nil
@@ -2797,6 +2844,7 @@ Behavior:
   - Improvement cycle pass count defaults to 5 and can be limited with --improvement-passes.
   - If improvement is already marked complete but clarification tasks have comments, yoke reruns improvement automatically.
   - Clarification tasks with comments are auto-closed before selecting the next child task.
+  - In-progress child tasks with unmet blocking dependencies are skipped.
   - Epic improvement reports are saved in .yoke/epic-improvement-reports/<epic-id>/.
   - If issue id is an epic, claims the next ready/in-progress child task in that epic.
   - If an epic has no remaining open child tasks, yoke closes the epic and exits.
