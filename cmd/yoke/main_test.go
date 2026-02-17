@@ -39,14 +39,17 @@ func TestParseShellValue(t *testing.T) {
 func TestExtractIssueID(t *testing.T) {
 	t.Parallel()
 
-	if got := extractIssueID("next: td-a1b2 ready", "td"); got != "td-a1b2" {
-		t.Fatalf("expected td-a1b2, got %q", got)
+	if got := extractIssueID("next: bd-a1b2 ready", "bd"); got != "bd-a1b2" {
+		t.Fatalf("expected bd-a1b2, got %q", got)
+	}
+	if got := extractIssueID("next: bd-a1b2.3 ready", "bd"); got != "bd-a1b2.3" {
+		t.Fatalf("expected bd-a1b2.3, got %q", got)
 	}
 	if got := extractIssueID("next: work-a1b2 ready", "work"); got != "work-a1b2" {
 		t.Fatalf("expected work-a1b2, got %q", got)
 	}
 
-	if got := extractIssueID("no issue here", "td"); got != "" {
+	if got := extractIssueID("no issue here", "bd"); got != "" {
 		t.Fatalf("expected empty issue ID, got %q", got)
 	}
 }
@@ -58,7 +61,7 @@ func TestLoadConfig(t *testing.T) {
 	content := `# shellcheck shell=bash
 YOKE_BASE_BRANCH="develop"
 YOKE_CHECK_CMD=".yoke/checks.sh"
-YOKE_TD_PREFIX="work"
+YOKE_BD_PREFIX="work"
 YOKE_WRITER_AGENT="codex"
 YOKE_WRITER_CMD='echo writing'
 YOKE_REVIEWER_AGENT="claude"
@@ -81,8 +84,8 @@ YOKE_PR_TEMPLATE=".github/pull_request_template.md"
 	if cfg.CheckCmd != ".yoke/checks.sh" {
 		t.Fatalf("CheckCmd = %q", cfg.CheckCmd)
 	}
-	if cfg.TDPrefix != "work" {
-		t.Fatalf("TDPrefix = %q", cfg.TDPrefix)
+	if cfg.BDPrefix != "work" {
+		t.Fatalf("BDPrefix = %q", cfg.BDPrefix)
 	}
 	if cfg.WriterAgent != "codex" {
 		t.Fatalf("WriterAgent = %q", cfg.WriterAgent)
@@ -101,11 +104,33 @@ YOKE_PR_TEMPLATE=".github/pull_request_template.md"
 	}
 }
 
+func TestLoadConfigLegacyTDPrefix(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.sh")
+
+	content := `# shellcheck shell=bash
+YOKE_BASE_BRANCH="main"
+YOKE_TD_PREFIX="legacy"
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("YOKE_CONFIG", cfgPath)
+	cfg, err := loadConfig(tmp)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.BDPrefix != "legacy" {
+		t.Fatalf("BDPrefix = %q, want legacy", cfg.BDPrefix)
+	}
+}
+
 func TestBranchForIssue(t *testing.T) {
 	t.Parallel()
 
-	got := branchForIssue("td-abc123")
-	if got != "yoke/td-abc123" {
+	got := branchForIssue("bd-abc123")
+	if got != "yoke/bd-abc123" {
 		t.Fatalf("branchForIssue returned %q", got)
 	}
 }
@@ -166,7 +191,7 @@ func TestDetectAvailableAgents(t *testing.T) {
 	}
 }
 
-func TestNormalizeTDPrefix(t *testing.T) {
+func TestNormalizeBDPrefix(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -174,9 +199,10 @@ func TestNormalizeTDPrefix(t *testing.T) {
 		want  string
 		ok    bool
 	}{
-		{input: "td", want: "td", ok: true},
+		{input: "bd", want: "bd", ok: true},
 		{input: "WORK", want: "work", ok: true},
 		{input: "team_1", want: "team_1", ok: true},
+		{input: "repo.name", want: "repo.name", ok: true},
 		{input: "bad-", want: "", ok: false},
 		{input: "a b", want: "", ok: false},
 	}
@@ -185,15 +211,15 @@ func TestNormalizeTDPrefix(t *testing.T) {
 		tc := tc
 		t.Run(tc.input, func(t *testing.T) {
 			t.Parallel()
-			got, err := normalizeTDPrefix(tc.input)
+			got, err := normalizeBDPrefix(tc.input)
 			if tc.ok && err != nil {
-				t.Fatalf("normalizeTDPrefix(%q) unexpected error: %v", tc.input, err)
+				t.Fatalf("normalizeBDPrefix(%q) unexpected error: %v", tc.input, err)
 			}
 			if !tc.ok && err == nil {
-				t.Fatalf("normalizeTDPrefix(%q) expected error", tc.input)
+				t.Fatalf("normalizeBDPrefix(%q) expected error", tc.input)
 			}
 			if got != tc.want {
-				t.Fatalf("normalizeTDPrefix(%q) = %q, want %q", tc.input, got, tc.want)
+				t.Fatalf("normalizeBDPrefix(%q) = %q, want %q", tc.input, got, tc.want)
 			}
 		})
 	}
@@ -205,7 +231,7 @@ func TestLooksLikeIssueID(t *testing.T) {
 	if !looksLikeIssueID("work-a1b2", "work") {
 		t.Fatalf("expected issue ID to match configured prefix")
 	}
-	if looksLikeIssueID("td-a1b2", "work") {
+	if looksLikeIssueID("bd-a1b2", "work") {
 		t.Fatalf("did not expect mismatched prefix to match")
 	}
 }
@@ -213,7 +239,7 @@ func TestLooksLikeIssueID(t *testing.T) {
 func TestIssueOrNone(t *testing.T) {
 	t.Parallel()
 
-	if got := issueOrNone("td-a1b2"); got != "td-a1b2" {
+	if got := issueOrNone("bd-a1b2"); got != "bd-a1b2" {
 		t.Fatalf("issueOrNone returned %q", got)
 	}
 	if got := issueOrNone(""); got != "none" {
@@ -297,21 +323,21 @@ func TestParseDaemonInterval(t *testing.T) {
 	}
 }
 
-func TestParseTDListIssuesJSON(t *testing.T) {
+func TestParseBDListIssuesJSON(t *testing.T) {
 	t.Parallel()
 
 	raw := `[
-  {"id":"td-a1","status":"in_progress"},
-  {"id":"td-b2","status":"in_review"}
+  {"id":"bd-a1","status":"in_progress"},
+  {"id":"bd-b2","status":"blocked","labels":["yoke:in_review"]}
 ]`
-	issues, err := parseTDListIssuesJSON(raw)
+	issues, err := parseBDListIssuesJSON(raw)
 	if err != nil {
-		t.Fatalf("parseTDListIssuesJSON error: %v", err)
+		t.Fatalf("parseBDListIssuesJSON error: %v", err)
 	}
 	if len(issues) != 2 {
 		t.Fatalf("expected 2 issues, got %d", len(issues))
 	}
-	if issues[0].ID != "td-a1" || issues[1].Status != "in_review" {
+	if issues[0].ID != "bd-a1" || issues[1].Status != "blocked" {
 		t.Fatalf("unexpected issues payload: %#v", issues)
 	}
 }
@@ -319,9 +345,9 @@ func TestParseTDListIssuesJSON(t *testing.T) {
 func TestFirstMatchingIssueID(t *testing.T) {
 	t.Parallel()
 
-	issues := []tdListIssue{
+	issues := []bdListIssue{
 		{ID: "work-a1", Status: "in_progress"},
-		{ID: "work-b2", Status: "in_review"},
+		{ID: "work-b2", Status: "blocked", Labels: []string{reviewQueueLabel}},
 	}
 	if got := firstMatchingIssueID(issues, "work", "in_progress"); got != "work-a1" {
 		t.Fatalf("firstMatchingIssueID in_progress = %q", got)
@@ -329,7 +355,7 @@ func TestFirstMatchingIssueID(t *testing.T) {
 	if got := firstMatchingIssueID(issues, "work", "in_review"); got != "work-b2" {
 		t.Fatalf("firstMatchingIssueID in_review = %q", got)
 	}
-	if got := firstMatchingIssueID(issues, "td", "in_progress"); got != "" {
+	if got := firstMatchingIssueID(issues, "bd", "in_progress"); got != "" {
 		t.Fatalf("firstMatchingIssueID mismatched prefix = %q", got)
 	}
 }
@@ -337,26 +363,14 @@ func TestFirstMatchingIssueID(t *testing.T) {
 func TestParseIssueStatusJSON(t *testing.T) {
 	t.Parallel()
 
-	if got, err := parseIssueStatusJSON(`{"id":"td-a1","status":"in_review"}`); err != nil || got != "in_review" {
+	if got, err := parseIssueStatusJSON(`[{"id":"bd-a1","status":"blocked","labels":["yoke:in_review"]}]`); err != nil || got != "in_review" {
 		t.Fatalf("parseIssueStatusJSON valid = (%q, %v)", got, err)
 	}
-	if _, err := parseIssueStatusJSON(`{"id":"td-a1"}`); err == nil {
+	if got, err := parseIssueStatusJSON(`[{"id":"bd-a1","status":"closed"}]`); err != nil || got != "closed" {
+		t.Fatalf("parseIssueStatusJSON closed = (%q, %v)", got, err)
+	}
+	if _, err := parseIssueStatusJSON(`[{"id":"bd-a1"}]`); err == nil {
 		t.Fatalf("parseIssueStatusJSON missing status expected error")
-	}
-}
-
-func TestParseFocusedIssueID(t *testing.T) {
-	t.Parallel()
-
-	currentOutput := `SESSION: ses_123
-FOCUSED: work-a1 Implement daemon
-REVIEWS (1): work-b2 In review
-`
-	if got := parseFocusedIssueID(currentOutput, "work"); got != "work-a1" {
-		t.Fatalf("parseFocusedIssueID = %q, want work-a1", got)
-	}
-	if got := parseFocusedIssueID("No active work", "work"); got != "" {
-		t.Fatalf("parseFocusedIssueID without focused = %q, want empty", got)
 	}
 }
 
@@ -388,12 +402,24 @@ func TestParseOpenPRFromListJSON(t *testing.T) {
 func TestFormatWriterPRComment(t *testing.T) {
 	t.Parallel()
 
-	comment := formatWriterPRComment("td-a1b2", "done text", "remaining text", "decision text", "uncertain text", "make check")
+	comment := formatWriterPRComment("bd-a1b2", "done text", "remaining text", "decision text", "uncertain text", "make check")
 	if !contains(comment, "## Writer -> Reviewer Handoff") {
 		t.Fatalf("missing handoff heading: %s", comment)
 	}
-	if !contains(comment, "- Issue: `td-a1b2`") {
+	if !contains(comment, "- Issue: `bd-a1b2`") {
 		t.Fatalf("missing issue line: %s", comment)
+	}
+	if !contains(comment, "- Checks: `make check` passed") {
+		t.Fatalf("missing checks line: %s", comment)
+	}
+}
+
+func TestFormatIssueHandoffComment(t *testing.T) {
+	t.Parallel()
+
+	comment := formatIssueHandoffComment("done text", "remaining text", "decision text", "uncertain text", "make check")
+	if !contains(comment, "Writer handoff:") {
+		t.Fatalf("missing handoff heading: %s", comment)
 	}
 	if !contains(comment, "- Checks: `make check` passed") {
 		t.Fatalf("missing checks line: %s", comment)
@@ -403,7 +429,7 @@ func TestFormatWriterPRComment(t *testing.T) {
 func TestFormatReviewerPRComment(t *testing.T) {
 	t.Parallel()
 
-	comment := formatReviewerPRComment("td-a1b2", "reject", "needs tests", "note text", true)
+	comment := formatReviewerPRComment("bd-a1b2", "reject", "needs tests", "note text", true)
 	if !contains(comment, "## Reviewer Update") {
 		t.Fatalf("missing reviewer heading: %s", comment)
 	}
@@ -421,7 +447,7 @@ func TestFormatReviewerPRComment(t *testing.T) {
 func TestFormatDaemonNoConsensusPRComment(t *testing.T) {
 	t.Parallel()
 
-	comment := formatDaemonNoConsensusPRComment("td-a1b2", "in_review", 10)
+	comment := formatDaemonNoConsensusPRComment("bd-a1b2", "in_review", 10)
 	if !contains(comment, "## Daemon Notice") {
 		t.Fatalf("missing daemon heading: %s", comment)
 	}

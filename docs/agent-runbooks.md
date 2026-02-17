@@ -21,8 +21,8 @@ Use this loop for every change to yoke itself.
    - create at least one follow-up issue for the next iteration.
 
 Notes:
-- `<issue-id>` should match your configured prefix in `YOKE_TD_PREFIX` (default `td`).
-- Prefer yoke commands over direct td/git operations for core lifecycle transitions.
+- `<issue-id>` should match your configured prefix in `YOKE_BD_PREFIX` (default `bd`).
+- Prefer yoke commands over direct bd/git operations for core lifecycle transitions.
 
 ## Automatic daemon loop
 
@@ -38,13 +38,13 @@ Use this when you want continuous `code -> review -> code` automation:
 
 Daemon role command contract:
 - Writer command must transition state out of `in_progress` (usually via `yoke submit`).
-- Reviewer command must transition state out of `in_review` (via `yoke review --approve` or `--reject`).
-- `ISSUE_ID`, `ROOT_DIR`, `TD_PREFIX`, and `YOKE_ROLE` are exported to both commands.
+- Reviewer command must transition state out of review queue (`blocked` + `yoke:in_review`) via `yoke review --approve` or `--reject`.
+- `ISSUE_ID`, `ROOT_DIR`, `BD_PREFIX`, and `YOKE_ROLE` are exported to both commands.
 
 ## Writer agent runbook
 
 Objective:
-- implement a `td` issue and hand off for review
+- implement a `bd` issue and hand off for review
 
 ### Preflight
 
@@ -52,14 +52,14 @@ Objective:
 yoke doctor
 ```
 
-If `doctor` fails because `td` is missing, stop and request environment setup.
+If `doctor` fails because `bd` is missing, stop and request environment setup.
 
 ### Claim issue
 
 ```bash
 yoke claim
 # or
-yoke claim td-a1b2
+yoke claim bd-a1b2
 ```
 
 ### Implement
@@ -71,7 +71,7 @@ yoke claim td-a1b2
 ### Submit
 
 ```bash
-yoke submit td-a1b2 \
+yoke submit bd-a1b2 \
   --done "<what is complete>" \
   --remaining "<what remains>" \
   --decision "<optional key decision>" \
@@ -80,7 +80,7 @@ yoke submit td-a1b2 \
 
 Guidance:
 - `--done` and `--remaining` are required.
-- If on branch `yoke/td-a1b2`, issue id may be omitted.
+- If on branch `yoke/bd-a1b2`, issue id may be omitted.
 - Avoid `--no-push`/`--no-pr` unless explicitly requested.
 
 ### Writer output contract
@@ -108,7 +108,7 @@ yoke doctor
 ```bash
 yoke review
 # to target explicit issue
-yoke review td-a1b2
+yoke review bd-a1b2
 ```
 
 No decision flags prints issue details and next steps.
@@ -116,7 +116,7 @@ No decision flags prints issue details and next steps.
 ### Optional automated review command
 
 ```bash
-yoke review td-a1b2 --agent --note "Ran automated review pass"
+yoke review bd-a1b2 --agent --note "Ran automated review pass"
 ```
 
 Requires `YOKE_REVIEW_CMD` configured.
@@ -126,13 +126,13 @@ Requires `YOKE_REVIEW_CMD` configured.
 Approve:
 
 ```bash
-yoke review td-a1b2 --approve
+yoke review bd-a1b2 --approve
 ```
 
 Reject:
 
 ```bash
-yoke review td-a1b2 --reject "<clear rejection reason>"
+yoke review bd-a1b2 --reject "<clear rejection reason>"
 ```
 
 ### Reviewer output contract
@@ -150,7 +150,7 @@ Always report:
 ### Writer -> Reviewer
 
 ```text
-Issue: td-a1b2
+Issue: bd-a1b2
 Done: <summary>
 Remaining: <summary>
 Decision: <optional>
@@ -162,7 +162,7 @@ PR: <url or skip reason>
 ### Reviewer -> Writer (reject path)
 
 ```text
-Issue: td-a1b2
+Issue: bd-a1b2
 Decision: reject
 Reason: <specific blocking reason>
 Required changes:

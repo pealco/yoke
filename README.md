@@ -3,15 +3,15 @@
 `yoke` is an agent-first CLI harness for coding workflows where one agent writes and another reviews.
 
 It uses:
-- [`td`](https://td.haplab.com/docs/intro/) as task-state control plane
+- [`bd`](https://github.com/steveyegge/beads/tree/v0.49.2) as task-state control plane
 - `git` branches as task workspaces
 - pull requests as review/merge boundaries
 
 ## What yoke Does
 
-- Standardizes writer/reviewer handoffs around `td` state transitions.
+- Standardizes writer/reviewer handoffs around `bd` state transitions.
 - Applies quality gates before review handoff.
-- Creates and updates PR flow with predictable branch naming (`yoke/<td-id>`).
+- Creates and updates PR flow with predictable branch naming (`yoke/<bd-id>`).
 - Posts writer/reviewer handoff conversation into PR comments by default.
 - Starts PRs as drafts and automatically marks them ready after final approval.
 - Exposes a deterministic `yoke status` snapshot for agent preflight checks.
@@ -33,7 +33,7 @@ It uses:
 Requirements:
 - `go`
 - `git`
-- [`td`](https://td.haplab.com/docs/intro/)
+- [`bd`](https://github.com/steveyegge/beads/tree/v0.49.2)
 - `gh` (optional but recommended for PR automation)
 
 Build and install:
@@ -68,16 +68,16 @@ make release
 ./bin/yoke claim
 
 # 6) submit work for review
-./bin/yoke submit td-a1b2 --done "Implemented X" --remaining "Add tests"
+./bin/yoke submit bd-a1b2 --done "Implemented X" --remaining "Add tests"
 
 # 7) approve or reject review
-./bin/yoke review td-a1b2 --approve
+./bin/yoke review bd-a1b2 --approve
 # or
-./bin/yoke review td-a1b2 --reject "Missing regression test"
+./bin/yoke review bd-a1b2 --reject "Missing regression test"
 ```
 
-`init` also asks for the `td` issue prefix (default: `td`).
-This prefix is used when parsing issue IDs from `td` output and branch names.
+`init` also asks for the `bd` issue prefix (default: `bd`).
+This prefix is used when parsing issue IDs from `bd` output and branch names.
 
 For daemon mode, configure:
 - `YOKE_WRITER_CMD` to implement and submit an issue.

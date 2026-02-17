@@ -3,7 +3,7 @@
 You are the writer agent for issue `${ISSUE_ID}`.
 
 ## Goal
-- Implement the td issue scope only.
+- Implement the bd issue scope only.
 - Keep changes minimal and reversible.
 - When complete, transition the issue for review.
 

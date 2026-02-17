@@ -9,12 +9,12 @@ Install and verify:
 ```bash
 go version
 git --version
-td --version
+bd --version
 gh --version
 ```
 
 Notes:
-- `td` is required for core workflow.
+- `bd` is required for core workflow.
 - `gh` is optional; if missing, PR creation is skipped.
 
 ## 2. Build or install yoke
@@ -40,7 +40,7 @@ You can run via:
 During `init`, yoke:
 1. Ensures scaffold folders exist.
 2. Autodetects installed coding agents (`codex`, `claude`/`claude-code`).
-3. Prompts for the `td` issue prefix (default `td`).
+3. Prompts for the `bd` issue prefix (default `bd`).
 4. Prompts you to choose writer and reviewer agents.
 5. Saves choices in `.yoke/config.sh`.
 
@@ -49,8 +49,8 @@ Non-interactive setup:
 ```bash
 ./bin/yoke init --no-prompt --writer-agent codex --reviewer-agent claude
 
-# explicitly set td issue prefix
-./bin/yoke init --no-prompt --td-prefix td --writer-agent codex --reviewer-agent claude
+# explicitly set bd issue prefix
+./bin/yoke init --no-prompt --bd-prefix bd --writer-agent codex --reviewer-agent claude
 ```
 
 Using the same agent for both roles is supported:
@@ -67,10 +67,10 @@ Using the same agent for both roles is supported:
 
 Expected checks:
 - `git` present
-- `td` present
+- `bd` present
 - `gh` presence (warning only)
 - config file exists
-- configured td prefix
+- configured bd prefix
 - configured writer/reviewer agent availability
 
 ## 5. Run one task end-to-end
@@ -81,7 +81,7 @@ Expected checks:
 ./bin/yoke status
 ```
 
-Use this before `claim`, `submit`, or `review` to verify branch, configured agents, and `td` focus/next context.
+Use this before `claim`, `submit`, or `review` to verify branch, configured agents, and `bd` focus/next context.
 
 ### Configure daemon commands (optional but recommended)
 
@@ -106,9 +106,9 @@ Then run:
 ```
 
 Behavior:
-- starts a fresh td session context
-- picks issue from `td next` (if not provided)
-- runs `td start <issue>`
+- picks issue from `bd list --status open --ready` (if not provided)
+- runs `bd update <issue> --status in_progress`
+- removes `yoke:in_review` label if present
 - checks out/creates `yoke/<issue>` branch
 
 ### Implement
@@ -118,7 +118,7 @@ Do your coding work and commit changes.
 ### Submit for review
 
 ```bash
-./bin/yoke submit td-a1b2 \
+./bin/yoke submit bd-a1b2 \
   --done "Implemented OAuth callback" \
   --remaining "Add refresh token tests" \
   --decision "Used state nonce in callback" \
@@ -127,8 +127,8 @@ Do your coding work and commit changes.
 
 Behavior:
 - runs quality checks (`.yoke/checks.sh` by default)
-- runs `td handoff ...`
-- runs `td review <issue>`
+- adds a structured handoff note with `bd comments add`
+- moves issue to review queue with `bd update <issue> --status blocked --add-label yoke:in_review`
 - pushes branch to `origin` (unless `--no-push`)
 - creates draft PR via `gh` (unless `--no-pr`)
 - posts writer handoff comment to PR (unless `--no-pr-comment`)
@@ -136,9 +136,9 @@ Behavior:
 ### Review
 
 ```bash
-./bin/yoke review td-a1b2 --approve
+./bin/yoke review bd-a1b2 --approve
 # or
-./bin/yoke review td-a1b2 --reject "Missing timeout handling tests"
+./bin/yoke review bd-a1b2 --reject "Missing timeout handling tests"
 ```
 
 When approval succeeds and the issue PR is draft, `yoke review --approve` marks it ready for review automatically.
@@ -146,13 +146,13 @@ When approval succeeds and the issue PR is draft, `yoke review --approve` marks 
 Optional automation hook:
 
 ```bash
-./bin/yoke review td-a1b2 --agent --approve
+./bin/yoke review bd-a1b2 --agent --approve
 ```
 
 `--agent` executes `YOKE_REVIEW_CMD` with:
 - `ISSUE_ID`
 - `ROOT_DIR`
-- `TD_PREFIX`
+- `BD_PREFIX`
 - `YOKE_ROLE=reviewer`
 
 By default, reviewer actions (`--approve`, `--reject`, `--note`) also post reviewer comments to the branch PR.

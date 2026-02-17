@@ -1,4 +1,4 @@
-// Command yoke provides a Go CLI harness for td + PR writer/reviewer workflows.
+// Command yoke provides a Go CLI harness for bd + PR writer/reviewer workflows.
 package main
 
 import (
@@ -21,8 +21,9 @@ const (
 	defaultBaseBranch = "main"
 	defaultCheckCmd   = ".yoke/checks.sh"
 	defaultPRTemplate = ".github/pull_request_template.md"
-	defaultTDPrefix   = "td"
+	defaultBDPrefix   = "bd"
 	defaultDaemonPoll = 30 * time.Second
+	reviewQueueLabel  = "yoke:in_review"
 )
 
 var (
@@ -58,7 +59,7 @@ var supportedAgents = []agentSpec{
 type config struct {
 	BaseBranch    string
 	CheckCmd      string
-	TDPrefix      string
+	BDPrefix      string
 	WriterAgent   string
 	WriterCmd     string
 	ReviewerAgent string
@@ -138,7 +139,7 @@ func cmdInit(args []string) error {
 	var (
 		writerOverride   string
 		reviewerOverride string
-		tdPrefixOverride string
+		bdPrefixOverride string
 		noPrompt         bool
 	)
 
@@ -164,16 +165,16 @@ func cmdInit(args []string) error {
 				return fmt.Errorf("unsupported reviewer agent: %s", args[i])
 			}
 			reviewerOverride = normalized
-		case "--td-prefix":
+		case "--bd-prefix", "--td-prefix":
 			i++
 			if i >= len(args) {
-				return errors.New("--td-prefix requires a value")
+				return errors.New("--bd-prefix requires a value")
 			}
-			normalized, err := normalizeTDPrefix(args[i])
+			normalized, err := normalizeBDPrefix(args[i])
 			if err != nil {
 				return err
 			}
-			tdPrefixOverride = normalized
+			bdPrefixOverride = normalized
 		case "--no-prompt":
 			noPrompt = true
 		case "-h", "--help":
@@ -206,12 +207,12 @@ func cmdInit(args []string) error {
 
 	availableAgents := detectAvailableAgents()
 
-	tdPrefix := cfg.TDPrefix
-	if tdPrefixOverride != "" {
-		tdPrefix = tdPrefixOverride
+	bdPrefix := cfg.BDPrefix
+	if bdPrefixOverride != "" {
+		bdPrefix = bdPrefixOverride
 	}
-	if tdPrefix == "" {
-		tdPrefix = defaultTDPrefix
+	if bdPrefix == "" {
+		bdPrefix = defaultBDPrefix
 	}
 
 	writer := cfg.WriterAgent
@@ -230,12 +231,12 @@ func cmdInit(args []string) error {
 	shouldPrompt := !noPrompt && isInteractiveTerminal(os.Stdin) && isInteractiveTerminal(os.Stdout)
 	if shouldPrompt {
 		reader := bufio.NewReader(os.Stdin)
-		if tdPrefixOverride == "" {
-			selected, err := promptForTDPrefix(tdPrefix, reader)
+		if bdPrefixOverride == "" {
+			selected, err := promptForBDPrefix(bdPrefix, reader)
 			if err != nil {
 				return err
 			}
-			tdPrefix = selected
+			bdPrefix = selected
 		}
 
 		if len(availableAgents) > 0 {
@@ -268,12 +269,12 @@ func cmdInit(args []string) error {
 		}
 	}
 
-	tdPrefix, err = normalizeTDPrefix(tdPrefix)
+	bdPrefix, err = normalizeBDPrefix(bdPrefix)
 	if err != nil {
 		return err
 	}
 
-	cfg.TDPrefix = tdPrefix
+	cfg.BDPrefix = bdPrefix
 	cfg.WriterAgent = writer
 	cfg.ReviewerAgent = reviewer
 	if err := writeConfig(cfg); err != nil {
@@ -296,7 +297,7 @@ echo "No checks configured. Edit .yoke/checks.sh."
 	if len(availableAgents) == 0 {
 		note("No supported coding agents detected (codex, claude). Configure manually in .yoke/config.sh.")
 	}
-	note("TD prefix: " + valueOrUnset(cfg.TDPrefix))
+	note("BD prefix: " + valueOrUnset(cfg.BDPrefix))
 	note("Writer agent: " + valueOrUnset(cfg.WriterAgent))
 	note("Reviewer agent: " + valueOrUnset(cfg.ReviewerAgent))
 	note("Writer command: " + commandConfigStatus(cfg.WriterCmd))
@@ -324,7 +325,7 @@ func cmdDoctor(args []string) error {
 	}
 
 	failures := 0
-	for _, name := range []string{"git", "td"} {
+	for _, name := range []string{"git", "bd"} {
 		if commandExists(name) {
 			note("ok: " + name)
 		} else {
@@ -345,7 +346,7 @@ func cmdDoctor(args []string) error {
 		note("warning: config missing (" + cfg.Path + ")")
 	}
 
-	note("td prefix: " + cfg.TDPrefix)
+	note("bd prefix: " + cfg.BDPrefix)
 
 	if cfg.WriterAgent != "" {
 		note(fmt.Sprintf("writer agent: %s (%s)", cfg.WriterAgent, agentAvailabilityStatus(cfg.WriterAgent)))
@@ -386,28 +387,28 @@ func cmdStatus(args []string) error {
 	}
 
 	branch := strings.TrimSpace(commandCombinedOutput("git", "rev-parse", "--abbrev-ref", "HEAD"))
-	tdAvailable := commandExists("td")
+	bdAvailable := commandExists("bd")
 
-	tdFocus := "unavailable"
-	tdNext := "unavailable"
-	if tdAvailable {
-		tdFocus = issueOrNone(focusedIssueID(cfg.TDPrefix))
-		tdNext = issueOrNone(extractIssueID(commandCombinedOutput("td", "next"), cfg.TDPrefix))
+	bdFocus := "unavailable"
+	bdNext := "unavailable"
+	if bdAvailable {
+		bdFocus = issueOrNone(focusedIssueID(cfg.BDPrefix))
+		bdNext = issueOrNone(nextIssueID(cfg.BDPrefix))
 	}
 
 	note("repo_root: " + root)
 	note("current_branch: " + valueOrFallback(branch, "unknown"))
-	note("td_prefix: " + cfg.TDPrefix)
+	note("bd_prefix: " + cfg.BDPrefix)
 	note("writer_agent: " + valueOrUnset(cfg.WriterAgent))
 	note("writer_agent_status: " + configuredAgentStatus(cfg.WriterAgent))
 	note("writer_command: " + commandConfigStatus(cfg.WriterCmd))
 	note("reviewer_agent: " + valueOrUnset(cfg.ReviewerAgent))
 	note("reviewer_agent_status: " + configuredAgentStatus(cfg.ReviewerAgent))
 	note("reviewer_command: " + commandConfigStatus(cfg.ReviewCmd))
-	note("td_focus: " + tdFocus)
-	note("td_next: " + tdNext)
+	note("bd_focus: " + bdFocus)
+	note("bd_next: " + bdNext)
 	note("tool_git: " + availabilityLabel(commandExists("git")))
-	note("tool_td: " + availabilityLabel(tdAvailable))
+	note("tool_bd: " + availabilityLabel(bdAvailable))
 	note("tool_gh: " + availabilityLabel(commandExists("gh")))
 	return nil
 }
@@ -469,8 +470,8 @@ func cmdDaemon(args []string) error {
 		}
 	}
 
-	if !commandExists("td") {
-		return fmt.Errorf("missing required command: td")
+	if !commandExists("bd") {
+		return fmt.Errorf("missing required command: bd")
 	}
 
 	root, err := ensureRepoRoot()
@@ -517,7 +518,7 @@ func cmdDaemon(args []string) error {
 			return nil
 		}
 		if options.MaxIterations > 0 && iteration >= options.MaxIterations {
-			if err := notifyDaemonMaxIterationsReached(cfg.TDPrefix, options.MaxIterations); err != nil {
+			if err := notifyDaemonMaxIterationsReached(cfg.BDPrefix, options.MaxIterations); err != nil {
 				return err
 			}
 			note(fmt.Sprintf("Daemon reached max iterations (%d); exiting.", options.MaxIterations))
@@ -552,15 +553,15 @@ func parseDaemonInterval(raw string) (time.Duration, error) {
 }
 
 func runDaemonIteration(root string, cfg config, writerCmd, reviewerCmd string) (string, error) {
-	reviewable := firstReviewableIssueID(cfg.TDPrefix)
+	reviewable := firstReviewableIssueID(cfg.BDPrefix)
 	if reviewable != "" {
-		if err := runDaemonRoleCommand("reviewer", reviewable, reviewerCmd, root, cfg.TDPrefix); err != nil {
+		if err := runDaemonRoleCommand("reviewer", reviewable, reviewerCmd, root, cfg.BDPrefix); err != nil {
 			return "", err
 		}
 		return "reviewed " + reviewable, nil
 	}
 
-	inProgress, err := focusedOrInProgressIssueID(cfg.TDPrefix)
+	inProgress, err := focusedOrInProgressIssueID(cfg.BDPrefix)
 	if err != nil {
 		return "", err
 	}
@@ -568,13 +569,13 @@ func runDaemonIteration(root string, cfg config, writerCmd, reviewerCmd string) 
 		if err := ensureIssueBranchCheckedOut(inProgress); err != nil {
 			return "", err
 		}
-		if err := runDaemonRoleCommand("writer", inProgress, writerCmd, root, cfg.TDPrefix); err != nil {
+		if err := runDaemonRoleCommand("writer", inProgress, writerCmd, root, cfg.BDPrefix); err != nil {
 			return "", err
 		}
 		return "wrote " + inProgress, nil
 	}
 
-	next := nextIssueID(cfg.TDPrefix)
+	next := nextIssueID(cfg.BDPrefix)
 	if next != "" {
 		note("Daemon claiming next issue: " + next)
 		if err := cmdClaim([]string{next}); err != nil {
@@ -586,7 +587,7 @@ func runDaemonIteration(root string, cfg config, writerCmd, reviewerCmd string) 
 	return "idle", nil
 }
 
-func runDaemonRoleCommand(role, issue, shellCommand, root, tdPrefix string) error {
+func runDaemonRoleCommand(role, issue, shellCommand, root, bdPrefix string) error {
 	previousStatus, err := issueStatus(issue)
 	if err != nil {
 		return err
@@ -600,7 +601,7 @@ func runDaemonRoleCommand(role, issue, shellCommand, root, tdPrefix string) erro
 	cmd.Env = append(os.Environ(),
 		"ISSUE_ID="+issue,
 		"ROOT_DIR="+root,
-		"TD_PREFIX="+tdPrefix,
+		"BD_PREFIX="+bdPrefix,
 		"YOKE_ROLE="+role,
 	)
 	if err := cmd.Run(); err != nil {
@@ -612,7 +613,7 @@ func runDaemonRoleCommand(role, issue, shellCommand, root, tdPrefix string) erro
 		return err
 	}
 	if currentStatus == previousStatus {
-		return fmt.Errorf("%s command did not advance issue %s (still %s); ensure the command transitions td state", role, issue, currentStatus)
+		return fmt.Errorf("%s command did not advance issue %s (still %s); ensure the command transitions bd state", role, issue, currentStatus)
 	}
 
 	note(fmt.Sprintf("Daemon observed %s status transition: %s -> %s", issue, previousStatus, currentStatus))
@@ -680,16 +681,17 @@ func focusedOrInProgressIssueID(prefix string) (string, error) {
 }
 
 func focusedIssueID(prefix string) string {
-	return parseFocusedIssueID(commandCombinedOutput("td", "current"), prefix)
-}
+	branchIssue := currentBranchIssue(prefix)
+	if branchIssue == "" {
+		return ""
+	}
 
-func parseFocusedIssueID(raw, prefix string) string {
-	for _, line := range strings.Split(raw, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "FOCUSED:") {
-			continue
-		}
-		return extractIssueID(trimmed, prefix)
+	status, err := issueStatus(branchIssue)
+	if err != nil {
+		return ""
+	}
+	if status == "in_progress" {
+		return branchIssue
 	}
 	return ""
 }
@@ -707,38 +709,44 @@ func ensureIssueBranchCheckedOut(issue string) error {
 	return runCommand("git", "switch", "-c", target)
 }
 
-type tdListIssue struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
+type bdListIssue struct {
+	ID     string   `json:"id"`
+	Title  string   `json:"title"`
+	Status string   `json:"status"`
+	Labels []string `json:"labels"`
 }
 
 func firstIssueByStatus(prefix, status string) (string, error) {
-	output := commandCombinedOutput("td", "list", "--status", status, "--format", "json", "--limit", "20")
-	issues, err := parseTDListIssuesJSON(output)
+	if strings.EqualFold(strings.TrimSpace(status), "in_review") {
+		return firstReviewableIssueID(prefix), nil
+	}
+
+	output := commandCombinedOutput("bd", "list", "--status", status, "--json", "--limit", "20")
+	issues, err := parseBDListIssuesJSON(output)
 	if err != nil {
 		return "", err
 	}
 	return firstMatchingIssueID(issues, prefix, status), nil
 }
 
-func parseTDListIssuesJSON(raw string) ([]tdListIssue, error) {
+func parseBDListIssuesJSON(raw string) ([]bdListIssue, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" || trimmed == "null" {
 		return nil, nil
 	}
 
-	var issues []tdListIssue
+	var issues []bdListIssue
 	if err := json.Unmarshal([]byte(trimmed), &issues); err != nil {
-		return nil, fmt.Errorf("parse td list json: %w", err)
+		return nil, fmt.Errorf("parse bd list json: %w", err)
 	}
 	return issues, nil
 }
 
-func firstMatchingIssueID(issues []tdListIssue, prefix, status string) string {
+func firstMatchingIssueID(issues []bdListIssue, prefix, status string) string {
 	targetStatus := strings.ToLower(strings.TrimSpace(status))
 	for _, issue := range issues {
 		issueID := strings.ToLower(strings.TrimSpace(issue.ID))
-		issueStatus := strings.ToLower(strings.TrimSpace(issue.Status))
+		issueStatus := workflowStatusForIssue(issue)
 		if issueID == "" {
 			continue
 		}
@@ -753,28 +761,62 @@ func firstMatchingIssueID(issues []tdListIssue, prefix, status string) string {
 }
 
 func issueStatus(issue string) (string, error) {
-	output := commandCombinedOutput("td", "show", issue, "--json")
+	output := commandCombinedOutput("bd", "show", issue, "--json")
 	return parseIssueStatusJSON(output)
 }
 
 func parseIssueStatusJSON(raw string) (string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "", errors.New("empty issue payload")
+	issue, err := parseBDShowIssueJSON(raw)
+	if err != nil {
+		return "", err
 	}
 
-	var payload struct {
-		Status string `json:"status"`
-	}
-	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
-		return "", fmt.Errorf("parse td show json: %w", err)
-	}
-
-	status := strings.ToLower(strings.TrimSpace(payload.Status))
+	status := workflowStatusForIssue(issue)
 	if status == "" {
 		return "", errors.New("issue payload missing status")
 	}
 	return status, nil
+}
+
+func parseBDShowIssueJSON(raw string) (bdListIssue, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return bdListIssue{}, errors.New("empty issue payload")
+	}
+
+	var listPayload []bdListIssue
+	if err := json.Unmarshal([]byte(trimmed), &listPayload); err == nil {
+		if len(listPayload) == 0 {
+			return bdListIssue{}, errors.New("issue payload missing issue data")
+		}
+		return listPayload[0], nil
+	}
+
+	var singlePayload bdListIssue
+	if err := json.Unmarshal([]byte(trimmed), &singlePayload); err != nil {
+		return bdListIssue{}, fmt.Errorf("parse bd show json: %w", err)
+	}
+	if strings.TrimSpace(singlePayload.ID) == "" {
+		return bdListIssue{}, errors.New("issue payload missing issue data")
+	}
+	return singlePayload, nil
+}
+
+func workflowStatusForIssue(issue bdListIssue) string {
+	status := strings.ToLower(strings.TrimSpace(issue.Status))
+	if status == "blocked" && hasLabel(issue.Labels, reviewQueueLabel) {
+		return "in_review"
+	}
+	return status
+}
+
+func hasLabel(labels []string, target string) bool {
+	for _, label := range labels {
+		if strings.EqualFold(strings.TrimSpace(label), target) {
+			return true
+		}
+	}
+	return false
 }
 
 func cmdClaim(args []string) error {
@@ -786,7 +828,7 @@ func cmdClaim(args []string) error {
 	}
 
 	if len(args) > 1 {
-		return fmt.Errorf("usage: yoke claim [td-issue-id]")
+		return fmt.Errorf("usage: yoke claim [bd-issue-id]")
 	}
 
 	root, err := ensureRepoRoot()
@@ -797,8 +839,8 @@ func cmdClaim(args []string) error {
 	if err != nil {
 		return err
 	}
-	if !commandExists("td") {
-		return fmt.Errorf("missing required command: td")
+	if !commandExists("bd") {
+		return fmt.Errorf("missing required command: bd")
 	}
 
 	issue := ""
@@ -806,16 +848,14 @@ func cmdClaim(args []string) error {
 		issue = args[0]
 	}
 
-	_ = runCommandDiscard("td", "usage", "--new-session")
-
 	if issue == "" {
-		issue = nextIssueID(cfg.TDPrefix)
+		issue = nextIssueID(cfg.BDPrefix)
 	}
 	if issue == "" {
-		return errors.New("no issue provided and td next returned nothing")
+		return errors.New("no issue provided and bd ready returned nothing")
 	}
 
-	if err := runCommand("td", "start", issue); err != nil {
+	if err := runCommand("bd", "update", issue, "--status", "in_progress", "--remove-label", reviewQueueLabel); err != nil {
 		return err
 	}
 
@@ -901,7 +941,7 @@ func cmdSubmit(args []string) error {
 			printSubmitUsage()
 			return nil
 		default:
-			if looksLikeIssueID(arg, cfg.TDPrefix) {
+			if looksLikeIssueID(arg, cfg.BDPrefix) {
 				if issue != "" {
 					return errors.New("multiple issue ids provided")
 				}
@@ -912,8 +952,8 @@ func cmdSubmit(args []string) error {
 		}
 	}
 
-	if !commandExists("td") {
-		return fmt.Errorf("missing required command: td")
+	if !commandExists("bd") {
+		return fmt.Errorf("missing required command: bd")
 	}
 	if doneText == "" {
 		return errors.New("--done is required")
@@ -923,10 +963,10 @@ func cmdSubmit(args []string) error {
 	}
 
 	if issue == "" {
-		issue = currentBranchIssue(cfg.TDPrefix)
+		issue = currentBranchIssue(cfg.BDPrefix)
 	}
 	if issue == "" {
-		return fmt.Errorf("could not infer issue id from branch; pass %s-xxxx explicitly", cfg.TDPrefix)
+		return fmt.Errorf("could not infer issue id from branch; pass %s-xxxx explicitly", cfg.BDPrefix)
 	}
 
 	checkCommand := cfg.CheckCmd
@@ -937,18 +977,12 @@ func cmdSubmit(args []string) error {
 		return err
 	}
 
-	handoffArgs := []string{"handoff", issue, "--done", doneText, "--remaining", remaining}
-	if decision != "" {
-		handoffArgs = append(handoffArgs, "--decision", decision)
-	}
-	if uncertain != "" {
-		handoffArgs = append(handoffArgs, "--uncertain", uncertain)
-	}
-	if err := runCommand("td", handoffArgs...); err != nil {
+	handoffComment := formatIssueHandoffComment(doneText, remaining, decision, uncertain, checkCommand)
+	if err := runCommand("bd", "comments", "add", issue, handoffComment); err != nil {
 		return err
 	}
 
-	if err := runCommand("td", "review", issue); err != nil {
+	if err := runCommand("bd", "update", issue, "--status", "blocked", "--add-label", reviewQueueLabel); err != nil {
 		return err
 	}
 
@@ -1023,7 +1057,7 @@ func cmdReview(args []string) error {
 			printReviewUsage()
 			return nil
 		default:
-			if looksLikeIssueID(arg, cfg.TDPrefix) {
+			if looksLikeIssueID(arg, cfg.BDPrefix) {
 				if issue != "" {
 					return errors.New("multiple issue ids provided")
 				}
@@ -1034,12 +1068,12 @@ func cmdReview(args []string) error {
 		}
 	}
 
-	if !commandExists("td") {
-		return fmt.Errorf("missing required command: td")
+	if !commandExists("bd") {
+		return fmt.Errorf("missing required command: bd")
 	}
 
 	if issue == "" {
-		issue = firstReviewableIssueID(cfg.TDPrefix)
+		issue = firstReviewableIssueID(cfg.BDPrefix)
 	}
 	if issue == "" {
 		return errors.New("no reviewable issue found")
@@ -1056,7 +1090,7 @@ func cmdReview(args []string) error {
 		cmd.Env = append(os.Environ(),
 			"ISSUE_ID="+issue,
 			"ROOT_DIR="+root,
-			"TD_PREFIX="+cfg.TDPrefix,
+			"BD_PREFIX="+cfg.BDPrefix,
 			"YOKE_ROLE=reviewer",
 		)
 		if err := cmd.Run(); err != nil {
@@ -1065,14 +1099,14 @@ func cmdReview(args []string) error {
 	}
 
 	if noteText != "" {
-		if err := runCommand("td", "comment", issue, noteText); err != nil {
+		if err := runCommand("bd", "comments", "add", issue, noteText); err != nil {
 			return err
 		}
 	}
 
 	switch action {
 	case "approve":
-		if err := runCommand("td", "approve", issue); err != nil {
+		if err := runCommand("bd", "close", issue, "--reason", "approved-by-yoke-review"); err != nil {
 			return err
 		}
 		currentStatus, err := issueStatus(issue)
@@ -1080,14 +1114,19 @@ func cmdReview(args []string) error {
 			return err
 		}
 		if currentStatus != "closed" {
-			return fmt.Errorf("td approve did not close %s (current status: %s)", issue, currentStatus)
+			return fmt.Errorf("bd close did not close %s (current status: %s)", issue, currentStatus)
 		}
 		if err := ensureIssuePRReady(issue); err != nil {
 			return err
 		}
 		note("Approved " + issue)
 	case "reject":
-		if err := runCommand("td", "reject", issue, "--reason", rejectReason); err != nil {
+		if rejectReason != "" {
+			if err := runCommand("bd", "comments", "add", issue, "Reviewer rejection: "+rejectReason); err != nil {
+				return err
+			}
+		}
+		if err := runCommand("bd", "update", issue, "--status", "in_progress", "--remove-label", reviewQueueLabel); err != nil {
 			return err
 		}
 		currentStatus, err := issueStatus(issue)
@@ -1095,11 +1134,11 @@ func cmdReview(args []string) error {
 			return err
 		}
 		if currentStatus != "in_progress" {
-			return fmt.Errorf("td reject did not return %s to in_progress (current status: %s)", issue, currentStatus)
+			return fmt.Errorf("bd update did not return %s to in_progress (current status: %s)", issue, currentStatus)
 		}
 		note("Rejected " + issue)
 	default:
-		if err := runCommand("td", "show", issue); err != nil {
+		if err := runCommand("bd", "show", issue); err != nil {
 			return err
 		}
 		note("Next:")
@@ -1125,7 +1164,7 @@ func loadConfig(root string) (config, error) {
 	cfg := config{
 		BaseBranch:    defaultBaseBranch,
 		CheckCmd:      defaultCheckCmd,
-		TDPrefix:      defaultTDPrefix,
+		BDPrefix:      defaultBDPrefix,
 		WriterAgent:   "",
 		WriterCmd:     "",
 		ReviewerAgent: "",
@@ -1160,8 +1199,13 @@ func loadConfig(root string) (config, error) {
 			cfg.BaseBranch = value
 		case "YOKE_CHECK_CMD":
 			cfg.CheckCmd = value
+		case "YOKE_BD_PREFIX":
+			cfg.BDPrefix = value
 		case "YOKE_TD_PREFIX":
-			cfg.TDPrefix = value
+			// Backward compatibility for older config files.
+			if strings.TrimSpace(cfg.BDPrefix) == "" || cfg.BDPrefix == defaultBDPrefix {
+				cfg.BDPrefix = value
+			}
 		case "YOKE_WRITER_AGENT":
 			cfg.WriterAgent = value
 		case "YOKE_WRITER_CMD":
@@ -1178,11 +1222,11 @@ func loadConfig(root string) (config, error) {
 		return cfg, err
 	}
 
-	normalizedPrefix, err := normalizeTDPrefix(cfg.TDPrefix)
+	normalizedPrefix, err := normalizeBDPrefix(cfg.BDPrefix)
 	if err != nil {
 		return cfg, err
 	}
-	cfg.TDPrefix = normalizedPrefix
+	cfg.BDPrefix = normalizedPrefix
 
 	return cfg, nil
 }
@@ -1223,14 +1267,14 @@ YOKE_BASE_BRANCH=%s
 # Check command or executable path. Set to "skip" to bypass.
 YOKE_CHECK_CMD=%s
 
-# Prefix used for td issue IDs (example: td-a1b2).
-YOKE_TD_PREFIX=%s
+# Prefix used for bd issue IDs (example: bd-a1b2).
+YOKE_BD_PREFIX=%s
 
 # Selected coding agent for writing (codex or claude).
 YOKE_WRITER_AGENT=%s
 
 # Optional writer command for yoke daemon loops.
-# Runs with ISSUE_ID, ROOT_DIR, TD_PREFIX, and YOKE_ROLE=writer.
+# Runs with ISSUE_ID, ROOT_DIR, BD_PREFIX, and YOKE_ROLE=writer.
 # Expected behavior: implement the issue and transition state via yoke submit.
 YOKE_WRITER_CMD=%s
 
@@ -1238,7 +1282,7 @@ YOKE_WRITER_CMD=%s
 YOKE_REVIEWER_AGENT=%s
 
 # Optional reviewer agent command. Runs when using: yoke review --agent
-# and yoke daemon. Runs with ISSUE_ID, ROOT_DIR, TD_PREFIX, and YOKE_ROLE=reviewer.
+# and yoke daemon. Runs with ISSUE_ID, ROOT_DIR, BD_PREFIX, and YOKE_ROLE=reviewer.
 # Expected behavior for daemon mode: execute yoke review --approve or --reject.
 # Example:
 # YOKE_REVIEW_CMD='codex exec "Review $ISSUE_ID and run yoke review $ISSUE_ID --approve or --reject with reason"'
@@ -1249,7 +1293,7 @@ YOKE_PR_TEMPLATE=%s
 `,
 		quoteShell(cfg.BaseBranch),
 		quoteShell(cfg.CheckCmd),
-		quoteShell(cfg.TDPrefix),
+		quoteShell(cfg.BDPrefix),
 		quoteShell(cfg.WriterAgent),
 		quoteShell(cfg.WriterCmd),
 		quoteShell(cfg.ReviewerAgent),
@@ -1304,15 +1348,15 @@ func normalizeAgentID(input string) (string, bool) {
 	return "", false
 }
 
-func normalizeTDPrefix(input string) (string, error) {
+func normalizeBDPrefix(input string) (string, error) {
 	value := strings.ToLower(strings.TrimSpace(input))
 	if value == "" {
-		return defaultTDPrefix, nil
+		return defaultBDPrefix, nil
 	}
 
-	validPrefix := regexp.MustCompile(`^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$`)
+	validPrefix := regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$`)
 	if !validPrefix.MatchString(value) {
-		return "", fmt.Errorf("invalid td prefix %q: use letters, numbers, '_' or '-', and avoid trailing '-'", input)
+		return "", fmt.Errorf("invalid bd prefix %q: use letters, numbers, '.', '_' or '-', and avoid trailing separators", input)
 	}
 
 	return value, nil
@@ -1384,14 +1428,14 @@ func promptForAgentSelection(
 	}
 }
 
-func promptForTDPrefix(current string, reader *bufio.Reader) (string, error) {
-	defaultPrefix, err := normalizeTDPrefix(current)
+func promptForBDPrefix(current string, reader *bufio.Reader) (string, error) {
+	defaultPrefix, err := normalizeBDPrefix(current)
 	if err != nil {
-		defaultPrefix = defaultTDPrefix
+		defaultPrefix = defaultBDPrefix
 	}
 
 	for {
-		fmt.Printf("TD issue prefix [%s]: ", defaultPrefix)
+		fmt.Printf("BD issue prefix [%s]: ", defaultPrefix)
 		line, readErr := reader.ReadString('\n')
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			return "", readErr
@@ -1402,7 +1446,7 @@ func promptForTDPrefix(current string, reader *bufio.Reader) (string, error) {
 			return defaultPrefix, nil
 		}
 
-		normalized, normErr := normalizeTDPrefix(trimmed)
+		normalized, normErr := normalizeBDPrefix(trimmed)
 		if normErr == nil {
 			return normalized, nil
 		}
@@ -1529,11 +1573,11 @@ func refExists(ref string) bool {
 }
 
 func issuePatternForPrefix(prefix string) *regexp.Regexp {
-	normalized, err := normalizeTDPrefix(prefix)
+	normalized, err := normalizeBDPrefix(prefix)
 	if err != nil {
-		normalized = defaultTDPrefix
+		normalized = defaultBDPrefix
 	}
-	return regexp.MustCompile(regexp.QuoteMeta(normalized) + `-[a-z0-9]+`)
+	return regexp.MustCompile(regexp.QuoteMeta(normalized) + `-[a-z0-9]+(?:\.[a-z0-9]+)*`)
 }
 
 func extractIssueID(s, prefix string) string {
@@ -1546,13 +1590,21 @@ func looksLikeIssueID(value, prefix string) bool {
 }
 
 func nextIssueID(prefix string) string {
-	output := commandCombinedOutput("td", "next")
-	return extractIssueID(output, prefix)
+	output := commandCombinedOutput("bd", "list", "--status", "open", "--ready", "--json", "--limit", "20")
+	issues, err := parseBDListIssuesJSON(output)
+	if err != nil {
+		return ""
+	}
+	return firstMatchingIssueID(issues, prefix, "open")
 }
 
 func firstReviewableIssueID(prefix string) string {
-	output := commandCombinedOutput("td", "reviewable")
-	return extractIssueID(output, prefix)
+	output := commandCombinedOutput("bd", "list", "--status", "blocked", "--label", reviewQueueLabel, "--json", "--limit", "20")
+	issues, err := parseBDListIssuesJSON(output)
+	if err != nil {
+		return ""
+	}
+	return firstMatchingIssueID(issues, prefix, "in_review")
 }
 
 func currentBranchIssue(prefix string) string {
@@ -1568,14 +1620,10 @@ func branchForIssue(issue string) string {
 }
 
 func issueTitle(issue string) string {
-	output := commandCombinedOutput("td", "show", issue)
-	for _, line := range strings.Split(output, "\n") {
-		if strings.HasPrefix(line, "Title:") {
-			title := strings.TrimSpace(strings.TrimPrefix(line, "Title:"))
-			if title != "" {
-				return title
-			}
-		}
+	output := commandCombinedOutput("bd", "show", issue, "--json")
+	parsed, err := parseBDShowIssueJSON(output)
+	if err == nil && strings.TrimSpace(parsed.Title) != "" {
+		return strings.TrimSpace(parsed.Title)
 	}
 	return issue
 }
@@ -1751,6 +1799,22 @@ func formatWriterPRComment(issue, doneText, remaining, decision, uncertain, chec
 	return strings.Join(lines, "\n")
 }
 
+func formatIssueHandoffComment(doneText, remaining, decision, uncertain, checks string) string {
+	lines := []string{
+		"Writer handoff:",
+		"- Done: " + sanitizeCommentLine(doneText),
+		"- Remaining: " + sanitizeCommentLine(remaining),
+		"- Checks: `" + sanitizeCommentLine(checks) + "` passed",
+	}
+	if strings.TrimSpace(decision) != "" {
+		lines = append(lines, "- Decision: "+sanitizeCommentLine(decision))
+	}
+	if strings.TrimSpace(uncertain) != "" {
+		lines = append(lines, "- Uncertain: "+sanitizeCommentLine(uncertain))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func formatReviewerPRComment(issue, action, rejectReason, noteText string, runAgent bool) string {
 	decision := "note"
 	if strings.TrimSpace(action) != "" {
@@ -1832,10 +1896,10 @@ func fatal(err error) {
 }
 
 func printUsage() {
-	fmt.Print(`yoke: agent-first td + PR harness
+	fmt.Print(`yoke: agent-first bd + PR harness
 
 Purpose:
-  Coordinate writer/reviewer workflows for coding agents using td state transitions
+  Coordinate writer/reviewer workflows for coding agents using bd state transitions
   and git/PR boundaries.
 
 Usage:
@@ -1852,9 +1916,9 @@ Commands:
   init    Initialize scaffold, detect available agents, and persist writer/reviewer choices.
   doctor  Validate required tools/config and report agent availability.
   status  Print current repo/task/agent status snapshot for deterministic agent consumption.
-  daemon  Run continuous writer/reviewer automation loop over td issue states.
-  claim   Start work on an issue (td start + branch switch/create).
-  submit  Run checks, create td handoff, move issue to review, and open/update PR workflow.
+  daemon  Run continuous writer/reviewer automation loop over bd issue states.
+  claim   Start work on an issue (bd update --status in_progress + branch switch/create).
+  submit  Run checks, add handoff comment, move issue to review queue, and open/update PR workflow.
   review  Review an issue, optionally run reviewer automation, then approve/reject.
 
 Help discovery:
@@ -1873,7 +1937,7 @@ Purpose:
 Behavior:
   1) Ensures scaffold directories exist (.yoke/, .github/, docs/).
   2) Autodetects supported agents on PATH (codex, claude/claude-code).
-  3) In interactive terminals, prompts for td issue prefix selection.
+  3) In interactive terminals, prompts for bd issue prefix selection.
   4) In interactive terminals, prompts for writer and reviewer selection.
      Writer and reviewer may be the same agent.
   5) Writes selections to .yoke/config.sh.
@@ -1881,17 +1945,18 @@ Behavior:
 Options:
   --writer-agent codex|claude     Set writer agent explicitly.
   --reviewer-agent codex|claude   Set reviewer agent explicitly.
-  --td-prefix PREFIX              Set td issue prefix explicitly (default: td).
+  --bd-prefix PREFIX              Set bd issue prefix explicitly (default: bd).
+  --td-prefix PREFIX              Deprecated alias for --bd-prefix.
   --no-prompt                     Do not prompt; auto-select detected defaults.
 
 Examples:
   yoke init
   yoke init --writer-agent codex --reviewer-agent codex
-  yoke init --no-prompt --writer-agent codex --reviewer-agent claude --td-prefix td
+  yoke init --no-prompt --writer-agent codex --reviewer-agent claude --bd-prefix bd
 
 Outputs:
   Updates .yoke/config.sh keys:
-  - YOKE_TD_PREFIX
+  - YOKE_BD_PREFIX
   - YOKE_WRITER_AGENT
   - YOKE_WRITER_CMD
   - YOKE_REVIEWER_AGENT
@@ -1907,10 +1972,10 @@ Purpose:
   Validate local environment before running writer/reviewer workflows.
 
 Checks performed:
-  - Required binaries: git, td
+  - Required binaries: git, bd
   - Optional binary: gh
   - Config file presence: .yoke/config.sh
-  - Configured td issue prefix
+  - Configured bd issue prefix
   - Configured writer/reviewer agent availability on PATH
   - Configured writer/reviewer daemon commands
 
@@ -1933,17 +1998,17 @@ Purpose:
 Output fields:
   - repo_root: git repository root path
   - current_branch: active branch name
-  - td_prefix: configured issue prefix from YOKE_TD_PREFIX
+  - bd_prefix: configured issue prefix from YOKE_BD_PREFIX
   - writer_agent / reviewer_agent: configured agent ids (or unset)
   - writer_agent_status / reviewer_agent_status: binary availability summary
   - writer_command / reviewer_command: daemon command readiness
-  - td_focus: focused issue parsed from td current (or none/unavailable)
-  - td_next: next issue parsed from td next (or none/unavailable)
-  - tool_git / tool_td / tool_gh: command availability
+  - bd_focus: focused in-progress issue inferred from current branch (or none/unavailable)
+  - bd_next: next ready open issue from bd (or none/unavailable)
+  - tool_git / tool_bd / tool_gh: command availability
 
 Usage guidance for agents:
   1) Run yoke status before claim/submit/review to confirm context.
-  2) If td_focus is none, prefer yoke claim.
+  2) If bd_focus is none, prefer yoke claim.
   3) If reviewer_agent_status is missing, use manual yoke review flags.
 
 Example:
@@ -1956,12 +2021,12 @@ func printDaemonUsage() {
   yoke daemon [options]
 
 Purpose:
-  Run an automatic code -> review loop for td issues using configured writer/reviewer commands.
+  Run an automatic code -> review loop for bd issues using configured writer/reviewer commands.
 
 Loop priority (each iteration):
-  1) Review first issue from td reviewable via reviewer command.
+  1) Review first issue from the review queue (status blocked + label yoke:in_review).
   2) Otherwise run writer command on focused/in_progress issue.
-  3) Otherwise claim td next issue.
+  3) Otherwise claim next ready open issue from bd.
   4) Otherwise idle (sleep and poll again in continuous mode).
   5) If max iterations are reached without consensus, daemon notifies and leaves PR draft/open.
 
@@ -1969,8 +2034,8 @@ Command contract:
   - Writer command comes from YOKE_WRITER_CMD (or --writer-cmd override).
   - Reviewer command comes from YOKE_REVIEW_CMD (or --reviewer-cmd override).
   - Both run with env vars:
-      ISSUE_ID, ROOT_DIR, TD_PREFIX, YOKE_ROLE
-  - Commands must transition td status (writer -> submit/review, reviewer -> approve/reject).
+      ISSUE_ID, ROOT_DIR, BD_PREFIX, YOKE_ROLE
+  - Commands must transition bd workflow state (writer -> submit/review queue, reviewer -> close or in_progress).
     If status does not change, daemon exits with an error to avoid infinite loops.
 
 Options:
@@ -1995,20 +2060,20 @@ Purpose:
   Move an issue into active work and place the repository on the matching branch.
 
 Behavior:
-  - Starts a fresh td session context (td usage --new-session).
-  - If issue id omitted, pulls from td next.
-  - Runs td start <issue>.
+  - If issue id omitted, picks first issue from bd open+ready list.
+  - Runs bd update <issue> --status in_progress.
+  - Removes yoke review-queue label if present.
   - Switches to existing branch yoke/<issue> or creates it.
 
 Inputs:
-  issue-id    Optional. Explicit issue id (example uses prefix from YOKE_TD_PREFIX).
+  issue-id    Optional. Explicit issue id (example uses prefix from YOKE_BD_PREFIX).
 
 Examples:
   yoke claim
-  yoke claim td-a1b2
+  yoke claim bd-a1b2
 
 Side effects:
-  - td status transition to in_progress
+  - bd status transition to in_progress
   - git branch switch/create
 `)
 }
@@ -2022,13 +2087,13 @@ Purpose:
 
 Behavior:
   1) Runs checks (default: .yoke/checks.sh).
-  2) Writes td handoff fields.
-  3) Moves issue to review (td review).
+  2) Writes a handoff comment to the bd issue.
+  3) Moves issue into review queue (status blocked + label yoke:in_review).
   4) Pushes branch and opens draft PR when configured tools are available.
   5) Posts writer handoff summary comment to the branch PR.
 
 Inputs:
-  issue-id    Optional. If omitted, inferred from current branch name using YOKE_TD_PREFIX.
+  issue-id    Optional. If omitted, inferred from current branch name using YOKE_BD_PREFIX.
 
 Options:
   --done TEXT          Required. What is complete now.
@@ -2041,7 +2106,7 @@ Options:
   --no-pr-comment      Do not post writer handoff comment to PR.
 
 Examples:
-  yoke submit td-a1b2 --done "Added auth flow" --remaining "Add tests"
+  yoke submit bd-a1b2 --done "Added auth flow" --remaining "Add tests"
   yoke submit --done "Refactor complete" --remaining "None" --no-pr
 `)
 }
@@ -2051,29 +2116,29 @@ func printReviewUsage() {
   yoke review [<prefix>-issue-id] [options]
 
 Purpose:
-  Execute reviewer step and finalize review outcome for a td issue.
+  Execute reviewer step and finalize review outcome for a bd issue.
 
 Behavior:
-  - If issue id omitted, selects first item from td reviewable.
+  - If issue id omitted, selects first issue in review queue (blocked + yoke:in_review).
   - Optional reviewer automation can run before final action.
-  - Reviewer automation receives ISSUE_ID, ROOT_DIR, TD_PREFIX, and YOKE_ROLE=reviewer.
+  - Reviewer automation receives ISSUE_ID, ROOT_DIR, BD_PREFIX, and YOKE_ROLE=reviewer.
   - Approve closes review path and marks the issue PR ready for review (lifts draft).
-  - Reject returns work to writer path.
+  - Reject adds a rejection note and returns work to writer path (in_progress, removes yoke:in_review).
   - Approve/reject/note actions post reviewer update comments to the branch PR.
 
 Inputs:
-  issue-id    Optional. Explicit issue id using YOKE_TD_PREFIX.
+  issue-id    Optional. Explicit issue id using YOKE_BD_PREFIX.
 
 Options:
   --agent              Run YOKE_REVIEW_CMD before final action.
-  --note TEXT          Add reviewer note to td issue.
-  --approve            Approve issue (td approve).
-  --reject TEXT        Reject issue with reason (td reject --reason).
+  --note TEXT          Add reviewer note to bd issue.
+  --approve            Approve issue (bd close).
+  --reject TEXT        Reject issue with reason.
   --no-pr-comment      Do not post reviewer update comment to PR.
 
 Examples:
-  yoke review td-a1b2 --agent --approve
-  yoke review td-a1b2 --reject "Missing edge-case test coverage"
+  yoke review bd-a1b2 --agent --approve
+  yoke review bd-a1b2 --reject "Missing edge-case test coverage"
   yoke review --note "Verified behavior locally"
 `)
 }

@@ -14,7 +14,7 @@ Override location:
 # shellcheck shell=bash
 YOKE_BASE_BRANCH="main"
 YOKE_CHECK_CMD=".yoke/checks.sh"
-YOKE_TD_PREFIX="td"
+YOKE_BD_PREFIX="bd"
 YOKE_WRITER_AGENT="codex"
 YOKE_WRITER_CMD=""
 YOKE_REVIEWER_AGENT="codex"
@@ -39,12 +39,12 @@ YOKE_PR_TEMPLATE=".github/pull_request_template.md"
   - literal `skip` to bypass checks
 - Default: `.yoke/checks.sh`.
 
-### `YOKE_TD_PREFIX`
+### `YOKE_BD_PREFIX`
 
-- Prefix used to parse td issue IDs in command output and branch names.
-- Expected issue format: `<prefix>-<id>` (example: `td-a1b2`).
+- Prefix used to parse bd issue IDs in command output and branch names.
+- Expected issue format: `<prefix>-<id>` (example: `bd-a1b2`).
 - Set during `yoke init`.
-- Default: `td`.
+- Default: `bd`.
 
 ### `YOKE_WRITER_AGENT`
 
@@ -59,7 +59,7 @@ YOKE_PR_TEMPLATE=".github/pull_request_template.md"
 - Environment passed:
   - `ISSUE_ID`
   - `ROOT_DIR`
-  - `TD_PREFIX`
+  - `BD_PREFIX`
   - `YOKE_ROLE=writer`
 - Expected behavior: implement and transition issue to review (for example via `yoke submit`).
 - Empty by default.
@@ -77,7 +77,7 @@ YOKE_PR_TEMPLATE=".github/pull_request_template.md"
 - Environment passed:
   - `ISSUE_ID`
   - `ROOT_DIR`
-  - `TD_PREFIX`
+  - `BD_PREFIX`
   - `YOKE_ROLE=reviewer`
 - Expected behavior for daemon mode: transition review state via `yoke review --approve` or `yoke review --reject`.
 - Empty by default.

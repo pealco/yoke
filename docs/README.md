@@ -24,4 +24,4 @@ This documentation is designed for both human operators and LLM coding agents.
 - automatic merge operations
 - full CI/CD orchestration
 
-It is intentionally a focused orchestration harness around `td`, `git`, and `gh`.
+It is intentionally a focused orchestration harness around `bd`, `git`, and `gh`.

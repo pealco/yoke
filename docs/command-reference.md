@@ -25,7 +25,7 @@ yoke help <command>
 Usage:
 
 ```bash
-yoke init [--writer-agent codex|claude] [--reviewer-agent codex|claude] [--td-prefix PREFIX] [--no-prompt]
+yoke init [--writer-agent codex|claude] [--reviewer-agent codex|claude] [--bd-prefix PREFIX] [--no-prompt]
 ```
 
 Purpose:
@@ -35,7 +35,7 @@ Purpose:
 
 Key behavior:
 - detects `codex` and `claude`/`claude-code` on PATH
-- asks for td issue prefix used to parse issue IDs (default: `td`)
+- asks for bd issue prefix used to parse issue IDs (default: `bd`)
 - prompts interactively when terminal is interactive and prompts are enabled
 - allows same agent for writer and reviewer
 - writes `.yoke/config.sh`
@@ -43,7 +43,7 @@ Key behavior:
 Failure cases:
 - unknown flags
 - invalid agent values
-- invalid td prefix value
+- invalid bd prefix value
 - not inside a git repository
 
 Examples:
@@ -52,7 +52,7 @@ Examples:
 yoke init
 yoke init --writer-agent codex --reviewer-agent claude
 yoke init --no-prompt --writer-agent codex --reviewer-agent codex
-yoke init --no-prompt --td-prefix td --writer-agent codex --reviewer-agent claude
+yoke init --no-prompt --bd-prefix bd --writer-agent codex --reviewer-agent claude
 ```
 
 ## `yoke doctor`
@@ -67,10 +67,10 @@ Purpose:
 - environment and configuration validation
 
 Checks:
-- required: `git`, `td`
+- required: `git`, `bd`
 - optional: `gh`
 - config file presence
-- configured td prefix
+- configured bd prefix
 - writer/reviewer agent availability status
 - writer/reviewer daemon command status
 
@@ -98,16 +98,16 @@ Purpose:
 Output includes:
 - repository root path
 - current git branch
-- configured td prefix
+- configured bd prefix
 - configured writer/reviewer agents and availability state
 - configured writer/reviewer command readiness
-- td focused issue (`td current`)
-- td next issue (`td next`)
-- basic tool availability (`git`, `td`, `gh`)
+- bd focused issue (current branch issue if its status is `in_progress`)
+- next issue from bd (first `open` + `ready` issue)
+- basic tool availability (`git`, `bd`, `gh`)
 
 Notes:
-- when `td` is unavailable, `td_focus` and `td_next` are reported as `unavailable`
-- when no issue is found, `td_focus` and `td_next` are `none`
+- when `bd` is unavailable, `bd_focus` and `bd_next` are reported as `unavailable`
+- when no issue is found, `bd_focus` and `bd_next` are `none`
 
 Example:
 
@@ -124,12 +124,12 @@ yoke daemon [--once] [--interval VALUE] [--max-iterations N] [--writer-cmd CMD] 
 ```
 
 Purpose:
-- run an automatic writer/reviewer loop against `td` issue states
+- run an automatic writer/reviewer loop against `bd` issue states
 
 Loop priority:
-1. run reviewer command for first `td reviewable` issue
+1. run reviewer command for first issue in review queue (`blocked` + label `yoke:in_review`)
 2. otherwise run writer command for focused/in-progress issue
-3. otherwise claim next issue from `td next`
+3. otherwise claim next issue from `bd list --status open --ready`
 4. otherwise idle
 5. if max iterations are reached without consensus, notify and keep PR draft/open
 
@@ -142,7 +142,7 @@ Execution contract:
 - both receive env vars:
   - `ISSUE_ID`
   - `ROOT_DIR`
-  - `TD_PREFIX`
+  - `BD_PREFIX`
   - `YOKE_ROLE`
 - command must advance issue status; if status is unchanged, daemon exits with an error to prevent infinite loops
 
@@ -167,15 +167,14 @@ Purpose:
 - claim and activate a task for implementation
 
 Behavior:
-1. `td usage --new-session` (best effort)
-2. chooses issue:
+1. chooses issue:
    - explicit argument, or
-   - first issue parsed from `td next`
-3. `td start <issue>`
-4. switch to branch `yoke/<issue>` or create it
+   - first issue from `bd list --status open --ready`
+2. `bd update <issue> --status in_progress --remove-label yoke:in_review`
+3. switch to branch `yoke/<issue>` or create it
 
 Failure cases:
-- `td` missing
+- `bd` missing
 - no claimable issue when omitted
 - git branch switch failure
 
@@ -183,7 +182,7 @@ Examples:
 
 ```bash
 yoke claim
-yoke claim td-a1b2
+yoke claim bd-a1b2
 ```
 
 ## `yoke submit`
@@ -212,12 +211,12 @@ Purpose:
 Behavior:
 1. resolve issue id:
    - explicit argument, or
-   - infer from current branch name containing `<YOKE_TD_PREFIX>-...`
+   - infer from current branch name containing `<YOKE_BD_PREFIX>-...`
 2. run checks:
    - default from `YOKE_CHECK_CMD`
    - override with `--checks`
-3. run `td handoff` with provided fields
-4. run `td review <issue>`
+3. add handoff note via `bd comments add`
+4. move issue to review queue via `bd update <issue> --status blocked --add-label yoke:in_review`
 5. push branch to `origin` unless `--no-push`
 6. open draft PR via `gh` unless `--no-pr`
    - skips PR creation when `gh` missing
@@ -228,9 +227,9 @@ Behavior:
 Examples:
 
 ```bash
-yoke submit td-a1b2 --done "Implemented parser" --remaining "Add tests"
+yoke submit bd-a1b2 --done "Implemented parser" --remaining "Add tests"
 yoke submit --done "Refactor complete" --remaining "None" --no-pr
-yoke submit td-a1b2 --done "Done" --remaining "None" --checks "go test ./..."
+yoke submit bd-a1b2 --done "Done" --remaining "None" --checks "go test ./..."
 ```
 
 ## `yoke review`
@@ -247,30 +246,30 @@ Purpose:
 Behavior:
 1. select issue:
    - explicit argument, or
-   - first issue parsed from `td reviewable`
+   - first issue in review queue (`blocked` + `yoke:in_review`)
 2. optional `--agent`:
    - runs shell command from `YOKE_REVIEW_CMD`
-   - exports `ISSUE_ID`, `ROOT_DIR`, `TD_PREFIX`, and `YOKE_ROLE=reviewer`
+   - exports `ISSUE_ID`, `ROOT_DIR`, `BD_PREFIX`, and `YOKE_ROLE=reviewer`
 3. optional `--note`:
-   - `td comment <issue> <note>`
+   - `bd comments add <issue> <note>`
 4. decision:
-   - `--approve` -> `td approve <issue>`
-   - `--reject` -> `td reject <issue> --reason ...`
-   - no decision -> `td show <issue>` and next-step hints
+   - `--approve` -> `bd close <issue>`
+   - `--reject` -> add rejection note and run `bd update <issue> --status in_progress --remove-label yoke:in_review`
+   - no decision -> `bd show <issue>` and next-step hints
 5. `--approve` also marks the issue PR ready for review (draft -> ready) when an open draft PR exists
 6. for approve/reject/note actions, posts reviewer update comment to PR unless `--no-pr-comment`
 
 Failure cases:
-- `td` missing
+- `bd` missing
 - no reviewable issue found
 - `--agent` used with empty `YOKE_REVIEW_CMD`
 
 Examples:
 
 ```bash
-yoke review td-a1b2 --approve
-yoke review td-a1b2 --reject "Missing rollback coverage"
-yoke review td-a1b2 --agent --note "Ran replay tests" --approve
+yoke review bd-a1b2 --approve
+yoke review bd-a1b2 --reject "Missing rollback coverage"
+yoke review bd-a1b2 --agent --note "Ran replay tests" --approve
 yoke review --note "Looks good, pending final test"
 ```
 

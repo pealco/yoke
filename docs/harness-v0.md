@@ -7,12 +7,12 @@ This is the original v0 architecture note. For current operational docs, use:
 
 ## Objective
 
-Run a solo two-agent workflow where one session writes code and another session reviews it, with `td` as the source of truth and PRs as the merge boundary.
+Run a solo two-agent workflow where one session writes code and another session reviews it, with `bd` as the source of truth and PRs as the merge boundary.
 
 ## Components
 
-- `td`: task lifecycle (`open -> in_progress -> in_review -> closed`)
-- `git` branch per issue: `yoke/<td-id>`
+- `bd`: task lifecycle (`open -> in_progress -> blocked+yoke:in_review -> closed`)
+- `git` branch per issue: `yoke/<bd-id>`
 - `gh` draft PR per issue branch
 - `cmd/yoke/main.go`: Go command harness implementation
 - `bin/yoke`: launcher that runs `go run ./cmd/yoke`
@@ -20,10 +20,9 @@ Run a solo two-agent workflow where one session writes code and another session 
 ## Workflow
 
 1. Claim issue:
-   - `yoke claim [td-id]`
-   - Starts a fresh td session.
-   - Moves issue to `in_progress`.
-   - Switches to `yoke/<td-id>` branch.
+   - `yoke claim [bd-id]`
+   - Moves issue to `in_progress` and clears `yoke:in_review` label.
+   - Switches to `yoke/<bd-id>` branch.
 
 Initialization:
 - `yoke init` auto-detects installed agents (`codex`, `claude`) and prompts for writer/reviewer.
@@ -35,30 +34,30 @@ Initialization:
    - Writer runs checks.
 
 3. Submit for review:
-   - `yoke submit [td-id] --done "..." --remaining "..."`
+   - `yoke submit [bd-id] --done "..." --remaining "..."`
    - Runs checks (`.yoke/checks.sh` by default).
-   - Writes `td handoff` fields.
-   - Moves issue to `in_review`.
+   - Writes handoff details as `bd comments add`.
+   - Moves issue to review queue (`blocked` + `yoke:in_review`).
    - Pushes branch and opens draft PR.
    - Posts writer handoff comment to PR.
 
 4. Review from separate session:
-   - `yoke review [td-id] --agent` (optional automated reviewer)
-   - `yoke review [td-id] --approve` to close.
-   - `yoke review [td-id] --reject "reason"` to send back.
+   - `yoke review [bd-id] --agent` (optional automated reviewer)
+   - `yoke review [bd-id] --approve` to close.
+   - `yoke review [bd-id] --reject "reason"` to send back.
    - Posts reviewer decision/note comments to PR.
    - Approval lifts PR draft status to ready-for-review.
 
 ## Command Reference
 
 ```bash
-yoke init [--writer-agent codex|claude] [--reviewer-agent codex|claude] [--td-prefix PREFIX] [--no-prompt]
+yoke init [--writer-agent codex|claude] [--reviewer-agent codex|claude] [--bd-prefix PREFIX] [--no-prompt]
 yoke doctor
 yoke status
 yoke daemon [--once] [--interval VALUE] [--max-iterations N]
-yoke claim [td-id]
-yoke submit [td-id] --done "..." --remaining "..." [--decision "..."] [--uncertain "..."]
-yoke review [td-id] [--agent] [--note "..."] [--approve | --reject "..."]
+yoke claim [bd-id]
+yoke submit [bd-id] --done "..." --remaining "..." [--decision "..."] [--uncertain "..."]
+yoke review [bd-id] [--agent] [--note "..."] [--approve | --reject "..."]
 yoke help [command]
 ```
 

@@ -1,6 +1,6 @@
-## td Issue
+## bd Issue
 
-- Issue: `td-xxxx`
+- Issue: `bd-xxxx`
 
 ## Done
 

@@ -12,46 +12,46 @@ cd /path/to/repo
 ./bin/yoke doctor
 ```
 
-## `missing required command: td`
+## `missing required command: bd`
 
 Cause:
-- `td` is not installed or not on PATH
+- `bd` is not installed or not on PATH
 
 Fix:
-- install `td`
+- install `bd`
 - ensure shell PATH includes the install location
 - rerun `yoke doctor`
 
-## `no issue provided and td next returned nothing`
+## `no issue provided and bd ready returned nothing`
 
 Cause:
-- `yoke claim` was run with no explicit issue and `td next` had no parseable `td-...` id
+- `yoke claim` was run with no explicit issue and no ready open issue was found for `YOKE_BD_PREFIX`
 
 Fix:
 - pass explicit issue id:
 
 ```bash
-yoke claim td-a1b2
+yoke claim bd-a1b2
 ```
 
-- or ensure `td next` output includes a valid issue id
-- or ensure `YOKE_TD_PREFIX` matches your td issue prefix
+- or ensure `bd list --status open --ready` returns an issue with your configured prefix
+- or ensure `YOKE_BD_PREFIX` matches your bd issue prefix
 
 ## `could not infer issue id from branch; pass <prefix>-xxxx explicitly`
 
 Cause:
-- `yoke submit` called without issue argument while current branch name does not contain `<YOKE_TD_PREFIX>-...`
+- `yoke submit` called without issue argument while current branch name does not contain `<YOKE_BD_PREFIX>-...`
 
 Fix:
 
 ```bash
-yoke submit td-a1b2 --done "..." --remaining "..."
+yoke submit bd-a1b2 --done "..." --remaining "..."
 ```
 
 Also verify your configured prefix:
 
 ```bash
-grep YOKE_TD_PREFIX .yoke/config.sh
+grep YOKE_BD_PREFIX .yoke/config.sh
 ```
 
 ## `YOKE_REVIEW_CMD is empty in .yoke/config.sh`
@@ -85,7 +85,7 @@ YOKE_WRITER_CMD='codex exec "Implement $ISSUE_ID, commit, then run yoke submit $
 ## `writer/reviewer command did not advance issue ...`
 
 Cause:
-- daemon ran role command but td status did not change
+- daemon ran role command but bd status did not change
 - this indicates the role command did not call the expected lifecycle transition
 
 Fix:
