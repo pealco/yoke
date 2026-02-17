@@ -426,6 +426,56 @@ func TestParseBDCommentsJSON(t *testing.T) {
 	}
 }
 
+func TestIsClarificationNeededTitle(t *testing.T) {
+	t.Parallel()
+
+	if !isClarificationNeededTitle("Clarification needed: intake contract") {
+		t.Fatalf("expected title to match clarification prefix")
+	}
+	if !isClarificationNeededTitle("  clarification needed: scope  ") {
+		t.Fatalf("expected case-insensitive clarification prefix match")
+	}
+	if isClarificationNeededTitle("Follow-up: intake contract") {
+		t.Fatalf("did not expect non-clarification title to match")
+	}
+}
+
+func TestClarificationTaskReadyForAutoClose(t *testing.T) {
+	t.Parallel()
+
+	if !clarificationTaskReadyForAutoClose(bdListIssue{
+		Title:        "Clarification needed: input behavior",
+		Status:       "open",
+		CommentCount: 1,
+	}) {
+		t.Fatalf("expected open clarification with comments to be auto-closable")
+	}
+
+	if clarificationTaskReadyForAutoClose(bdListIssue{
+		Title:        "Clarification needed: input behavior",
+		Status:       "closed",
+		CommentCount: 1,
+	}) {
+		t.Fatalf("did not expect closed clarification to be auto-closable")
+	}
+
+	if clarificationTaskReadyForAutoClose(bdListIssue{
+		Title:        "Clarification needed: input behavior",
+		Status:       "open",
+		CommentCount: 0,
+	}) {
+		t.Fatalf("did not expect clarification without comments to be auto-closable")
+	}
+
+	if clarificationTaskReadyForAutoClose(bdListIssue{
+		Title:        "Task: implement intake",
+		Status:       "open",
+		CommentCount: 2,
+	}) {
+		t.Fatalf("did not expect non-clarification task to be auto-closable")
+	}
+}
+
 func TestFirstMatchingIssueID(t *testing.T) {
 	t.Parallel()
 

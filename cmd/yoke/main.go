@@ -909,11 +909,7 @@ func collectClarificationContext(rootIssue string) ([]clarificationContext, erro
 
 	context := make([]clarificationContext, 0)
 	for _, issue := range descendants {
-		title := strings.ToLower(strings.TrimSpace(issue.Title))
-		if !strings.HasPrefix(title, "clarification needed:") {
-			continue
-		}
-		if issue.CommentCount <= 0 {
+		if !clarificationTaskReadyForAutoClose(issue) {
 			continue
 		}
 
@@ -932,6 +928,40 @@ func collectClarificationContext(rootIssue string) ([]clarificationContext, erro
 	}
 
 	return context, nil
+}
+
+func isClarificationNeededTitle(title string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(title)), "clarification needed:")
+}
+
+func clarificationTaskReadyForAutoClose(issue bdListIssue) bool {
+	if !isClarificationNeededTitle(issue.Title) {
+		return false
+	}
+	if issue.CommentCount <= 0 {
+		return false
+	}
+	return workflowStatusForIssue(issue) != "closed"
+}
+
+func closeClarificationTasksWithComments(rootIssue string) (int, error) {
+	descendants, err := collectDescendantIssues(rootIssue)
+	if err != nil {
+		return 0, err
+	}
+
+	closed := 0
+	for _, issue := range descendants {
+		if !clarificationTaskReadyForAutoClose(issue) {
+			continue
+		}
+		claimNote("Auto-closing clarification task with comments: " + issue.ID)
+		if err := runCommand("bd", "close", issue.ID, "--reason", "clarified-by-comment"); err != nil {
+			return closed, err
+		}
+		closed++
+	}
+	return closed, nil
 }
 
 func pickEpicChildToClaim(descendants, inProgress, ready []bdListIssue) (string, bool) {
@@ -992,6 +1022,16 @@ func resolveClaimIssue(root string, cfg config, issue string, passLimit int) (st
 	claimNote(fmt.Sprintf("Issue is an epic; running epic improvement cycle (limit=%d pass(es)) before selecting a child task.", passLimit))
 	if err := runEpicImprovementCycle(root, cfg, details, passLimit); err != nil {
 		return "", false, err
+	}
+	claimNote("Auto-resolving clarification tasks that have comments.")
+	autoClosedCount, err := closeClarificationTasksWithComments(issue)
+	if err != nil {
+		return "", false, err
+	}
+	if autoClosedCount == 0 {
+		claimNote("No clarification tasks required auto-close.")
+	} else {
+		claimNote(fmt.Sprintf("Auto-closed %d clarification task(s) from user comments.", autoClosedCount))
 	}
 	claimNote("Collecting epic descendants for claim selection.")
 
@@ -1054,15 +1094,17 @@ func runEpicImprovementCycle(root string, cfg config, epic bdListIssue, passLimi
 	if strings.TrimSpace(epicImprovementPromptTemplate) == "" {
 		return errors.New("epic improvement prompt template is empty")
 	}
-	if hasLabel(epic.Labels, epicImprovementCompleteLabel) {
-		claimNote("Epic improvement cycle already complete (label present); skipping rerun.")
-		return nil
-	}
-
 	claimNote("Checking for clarification tasks with comments before starting passes.")
 	clarificationContext, err := collectClarificationContext(epic.ID)
 	if err != nil {
 		return err
+	}
+	if hasLabel(epic.Labels, epicImprovementCompleteLabel) {
+		if len(clarificationContext) == 0 {
+			claimNote("Epic improvement cycle already complete (label present); skipping rerun.")
+			return nil
+		}
+		claimNote(fmt.Sprintf("Epic improvement already marked complete, but found %d clarification task(s) with comments; re-running improvement cycle.", len(clarificationContext)))
 	}
 	if len(clarificationContext) == 0 {
 		claimNote("No clarification tasks with comments found.")
@@ -2753,6 +2795,8 @@ Behavior:
   - If issue id omitted, picks first issue from bd open+ready list.
   - If issue id is an epic, runs an epic improvement cycle (writer/reviewer alternating) before task claim.
   - Improvement cycle pass count defaults to 5 and can be limited with --improvement-passes.
+  - If improvement is already marked complete but clarification tasks have comments, yoke reruns improvement automatically.
+  - Clarification tasks with comments are auto-closed before selecting the next child task.
   - Epic improvement reports are saved in .yoke/epic-improvement-reports/<epic-id>/.
   - If issue id is an epic, claims the next ready/in-progress child task in that epic.
   - If an epic has no remaining open child tasks, yoke closes the epic and exits.

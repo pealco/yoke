@@ -175,8 +175,10 @@ Behavior:
    - first issue from `bd list --status open --ready`
 2. if selected issue is an epic:
    - scans descendant tasks titled `Clarification needed: ...` and loads their comments as clarification context
+   - if improvement is already marked complete but clarification comments exist, automatically reruns improvement
    - runs an epic improvement cycle (writer/reviewer alternating) using the configured agents
    - pass count defaults to 5 and can be limited with `--improvement-passes`
+   - auto-closes clarification tasks that have comments (`bd close --reason clarified-by-comment`)
    - writes pass reports and summary to `.yoke/epic-improvement-reports/<epic-id>/`
    - posts an agent-generated summary comment to the epic
    - traverses epic descendants
