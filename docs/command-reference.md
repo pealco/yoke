@@ -181,7 +181,7 @@ Behavior:
    - runs an epic improvement cycle (writer/reviewer alternating) using the configured agents
    - pass count defaults to 5 and can be limited with `--improvement-passes`
    - auto-closes clarification tasks that have comments (`bd close --reason clarified-by-comment`)
-   - skips any in-progress child task that still has unmet `blocks` dependencies
+   - skips any in-progress or ready child task that still has unmet `blocks` dependencies
    - writes pass reports and summary to `.yoke/epic-improvement-reports/<epic-id>/`
    - posts an agent-generated summary comment to the epic
    - traverses epic descendants
@@ -189,14 +189,14 @@ Behavior:
    - otherwise picks first ready open child task
    - if all child tasks are closed, closes the epic and exits
 3. `bd update <resolved-issue> --status in_progress --remove-label yoke:in_review`
-4. switch to branch `yoke/<resolved-issue>` or create it
+4. ensure worktree `.yoke/worktrees/<resolved-issue>` exists and is attached to branch `yoke/<resolved-issue>`
 
 Failure cases:
 - `bd` missing
 - no claimable issue when omitted
 - explicit epic has no claimable child task (all remaining children blocked or already claimed)
 - claiming an epic without available configured writer/reviewer agents
-- git branch switch failure
+- git worktree creation or branch checkout inside worktree failure
 
 Examples:
 

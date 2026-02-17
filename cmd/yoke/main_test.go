@@ -114,6 +114,63 @@ func TestBranchForIssue(t *testing.T) {
 	}
 }
 
+func TestWorktreePathForIssue(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join(string(filepath.Separator), "tmp", "repo")
+	got := worktreePathForIssue(root, "bd-abc123")
+	want := filepath.Join(root, ".yoke", "worktrees", "bd-abc123")
+	if got != want {
+		t.Fatalf("worktreePathForIssue = %q, want %q", got, want)
+	}
+}
+
+func TestParseGitWorktreeListPorcelain(t *testing.T) {
+	t.Parallel()
+
+	raw := `worktree /tmp/repo
+HEAD 1234567890
+branch refs/heads/main
+
+worktree /tmp/repo/.yoke/worktrees/bd-a1
+HEAD abcdef0123
+branch refs/heads/yoke/bd-a1
+`
+	got := parseGitWorktreeListPorcelain(raw)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 worktree paths, got %d", len(got))
+	}
+	if got[0] != "/tmp/repo" {
+		t.Fatalf("first worktree path = %q", got[0])
+	}
+	if got[1] != "/tmp/repo/.yoke/worktrees/bd-a1" {
+		t.Fatalf("second worktree path = %q", got[1])
+	}
+}
+
+func TestParseGitWorktreeListEntries(t *testing.T) {
+	t.Parallel()
+
+	raw := `worktree /tmp/repo
+HEAD 1234567890
+branch refs/heads/main
+
+worktree /tmp/repo/.yoke/worktrees/bd-a1
+HEAD abcdef0123
+branch refs/heads/yoke/bd-a1
+`
+	got := parseGitWorktreeListEntries(raw)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 worktree entries, got %d", len(got))
+	}
+	if got[0].Path != "/tmp/repo" || got[0].Branch != "main" {
+		t.Fatalf("unexpected first entry: %#v", got[0])
+	}
+	if got[1].Path != "/tmp/repo/.yoke/worktrees/bd-a1" || got[1].Branch != "yoke/bd-a1" {
+		t.Fatalf("unexpected second entry: %#v", got[1])
+	}
+}
+
 func TestNormalizeAgentID(t *testing.T) {
 	t.Parallel()
 

@@ -568,7 +568,11 @@ func parseDaemonInterval(raw string) (time.Duration, error) {
 func runDaemonIteration(root string, cfg config, writerCmd, reviewerCmd string) (string, error) {
 	reviewable := firstReviewableIssueID(cfg.BDPrefix)
 	if reviewable != "" {
-		if err := runDaemonRoleCommand("reviewer", reviewable, reviewerCmd, root, cfg.BDPrefix); err != nil {
+		worktreePath, err := ensureIssueWorktree(root, reviewable)
+		if err != nil {
+			return "", err
+		}
+		if err := runDaemonRoleCommand("reviewer", reviewable, reviewerCmd, worktreePath, cfg.BDPrefix); err != nil {
 			return "", err
 		}
 		return "reviewed " + reviewable, nil
@@ -579,10 +583,11 @@ func runDaemonIteration(root string, cfg config, writerCmd, reviewerCmd string) 
 		return "", err
 	}
 	if inProgress != "" {
-		if err := ensureIssueBranchCheckedOut(inProgress); err != nil {
+		worktreePath, err := ensureIssueWorktree(root, inProgress)
+		if err != nil {
 			return "", err
 		}
-		if err := runDaemonRoleCommand("writer", inProgress, writerCmd, root, cfg.BDPrefix); err != nil {
+		if err := runDaemonRoleCommand("writer", inProgress, writerCmd, worktreePath, cfg.BDPrefix); err != nil {
 			return "", err
 		}
 		return "wrote " + inProgress, nil
@@ -709,17 +714,133 @@ func focusedIssueID(prefix string) string {
 	return ""
 }
 
-func ensureIssueBranchCheckedOut(issue string) error {
-	target := branchForIssue(issue)
-	current := strings.TrimSpace(commandCombinedOutput("git", "rev-parse", "--abbrev-ref", "HEAD"))
-	if current == target {
+func worktreePathForIssue(root, issue string) string {
+	return filepath.Join(root, ".yoke", "worktrees", sanitizePathSegment(issue))
+}
+
+type gitWorktreeEntry struct {
+	Path   string
+	Branch string
+}
+
+func parseGitWorktreeListEntries(raw string) []gitWorktreeEntry {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
 		return nil
 	}
 
-	if refExists("refs/heads/" + target) {
-		return runCommand("git", "switch", target)
+	lines := strings.Split(trimmed, "\n")
+	entries := make([]gitWorktreeEntry, 0)
+	current := gitWorktreeEntry{}
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			if strings.TrimSpace(current.Path) != "" {
+				entries = append(entries, current)
+			}
+			current = gitWorktreeEntry{
+				Path: strings.TrimSpace(strings.TrimPrefix(line, "worktree ")),
+			}
+		case strings.HasPrefix(line, "branch "):
+			ref := strings.TrimSpace(strings.TrimPrefix(line, "branch "))
+			current.Branch = strings.TrimPrefix(ref, "refs/heads/")
+		default:
+			continue
+		}
 	}
-	return runCommand("git", "switch", "-c", target)
+	if strings.TrimSpace(current.Path) != "" {
+		entries = append(entries, current)
+	}
+	return entries
+}
+
+func parseGitWorktreeListPorcelain(raw string) []string {
+	entries := parseGitWorktreeListEntries(raw)
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Path) == "" {
+			continue
+		}
+		paths = append(paths, entry.Path)
+	}
+	return paths
+}
+
+func worktreeRegistered(root, path string) bool {
+	output := commandCombinedOutput("git", "-C", root, "worktree", "list", "--porcelain")
+	paths := parseGitWorktreeListPorcelain(output)
+
+	targetAbs, err := filepath.Abs(path)
+	if err != nil {
+		targetAbs = filepath.Clean(path)
+	}
+	for _, listed := range paths {
+		listedAbs, pathErr := filepath.Abs(listed)
+		if pathErr != nil {
+			listedAbs = filepath.Clean(listed)
+		}
+		if listedAbs == targetAbs {
+			return true
+		}
+	}
+	return false
+}
+
+func worktreePathForBranch(root, branch string) string {
+	output := commandCombinedOutput("git", "-C", root, "worktree", "list", "--porcelain")
+	entries := parseGitWorktreeListEntries(output)
+	for _, entry := range entries {
+		if strings.EqualFold(strings.TrimSpace(entry.Branch), strings.TrimSpace(branch)) {
+			return strings.TrimSpace(entry.Path)
+		}
+	}
+	return ""
+}
+
+func ensureIssueWorktree(root, issue string) (string, error) {
+	branch := branchForIssue(issue)
+	worktreePath := worktreePathForIssue(root, issue)
+
+	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
+		return "", err
+	}
+
+	if existingPath := worktreePathForBranch(root, branch); strings.TrimSpace(existingPath) != "" {
+		return existingPath, nil
+	}
+
+	if !worktreeRegistered(root, worktreePath) {
+		if refExists("refs/heads/" + branch) {
+			if err := runCommand("git", "-C", root, "worktree", "add", worktreePath, branch); err != nil {
+				return "", err
+			}
+		} else {
+			if err := runCommand("git", "-C", root, "worktree", "add", "-b", branch, worktreePath); err != nil {
+				return "", err
+			}
+		}
+		return worktreePath, nil
+	}
+
+	current := strings.TrimSpace(commandCombinedOutput("git", "-C", worktreePath, "rev-parse", "--abbrev-ref", "HEAD"))
+	if current == "" {
+		return "", fmt.Errorf("could not determine current branch for worktree %s", worktreePath)
+	}
+	if current == branch {
+		return worktreePath, nil
+	}
+
+	if refExists("refs/heads/" + branch) {
+		if err := runCommand("git", "-C", worktreePath, "switch", branch); err != nil {
+			return "", err
+		}
+	} else {
+		if err := runCommand("git", "-C", worktreePath, "switch", "-c", branch); err != nil {
+			return "", err
+		}
+	}
+	return worktreePath, nil
 }
 
 type bdListIssue struct {
@@ -1771,22 +1892,16 @@ func cmdClaim(args []string) error {
 	claimNote("Issue state updated successfully.")
 
 	branch := branchForIssue(issue)
-	claimNote("Preparing git branch: " + branch)
-	if refExists("refs/heads/" + branch) {
-		claimNote("Branch exists locally; switching.")
-		if err := runCommand("git", "switch", branch); err != nil {
-			return err
-		}
-	} else {
-		claimNote("Branch does not exist; creating and switching.")
-		if err := runCommand("git", "switch", "-c", branch); err != nil {
-			return err
-		}
+	claimNote("Preparing issue worktree for branch: " + branch)
+	worktreePath, err := ensureIssueWorktree(root, issue)
+	if err != nil {
+		return err
 	}
-	claimNote("Branch is ready for development.")
+	claimNote("Worktree is ready for development: " + worktreePath)
 
 	note(fmt.Sprintf("Claimed %s on branch %s", issue, branch))
-	note(fmt.Sprintf("Next: yoke submit %s --done \"...\" --remaining \"...\"", issue))
+	note("Worktree: " + worktreePath)
+	note(fmt.Sprintf("Next: cd %q && yoke submit %s --done \"...\" --remaining \"...\"", worktreePath, issue))
 	return nil
 }
 
@@ -2862,7 +2977,7 @@ Commands:
   doctor  Validate required tools/config and report agent availability.
   status  Print current repo/task/agent status snapshot for deterministic agent consumption.
   daemon  Run continuous writer/reviewer automation loop over bd issue states.
-  claim   Start work on an issue (bd update --status in_progress + branch switch/create).
+  claim   Start work on an issue (bd update --status in_progress + ensure issue worktree).
   submit  Run checks, add handoff comment, move issue to review queue, and open/update PR workflow.
   review  Review an issue, optionally run reviewer automation, then approve/reject.
 
@@ -3001,7 +3116,7 @@ func printClaimUsage() {
   yoke claim [<prefix>-issue-id] [options]
 
 Purpose:
-  Move an issue into active work and place the repository on the matching branch.
+  Move an issue into active work and prepare a dedicated issue worktree.
 
 Behavior:
   - If issue id omitted, picks first issue from bd open+ready list.
@@ -3010,13 +3125,13 @@ Behavior:
   - Use --improvement-passes 0 to skip improvement passes and continue directly to child-task claim selection.
   - If improvement is already marked complete but clarification tasks have comments, yoke reruns improvement automatically.
   - Clarification tasks with comments are auto-closed before selecting the next child task.
-  - In-progress child tasks with unmet blocking dependencies are skipped.
+  - Child tasks with unmet blocking dependencies are skipped (both in-progress and ready lists).
   - Epic improvement reports are saved in .yoke/epic-improvement-reports/<epic-id>/.
   - If issue id is an epic, claims the next ready/in-progress child task in that epic.
   - If an epic has no remaining open child tasks, yoke closes the epic and exits.
   - Runs bd update <issue> --status in_progress.
   - Removes yoke review-queue label if present.
-  - Switches to existing branch yoke/<issue> or creates it.
+  - Ensures worktree .yoke/worktrees/<issue> is attached to branch yoke/<issue>.
 
 Inputs:
   issue-id    Optional. Explicit issue id (example uses prefix from YOKE_BD_PREFIX).
@@ -3031,7 +3146,7 @@ Examples:
 
 Side effects:
   - bd status transition to in_progress
-  - git branch switch/create
+  - git worktree create/reuse for issue branch
 `)
 }
 

@@ -66,6 +66,7 @@ make release
 
 # 5) claim work manually (optional)
 ./bin/yoke claim
+# claim prepares .yoke/worktrees/<issue> on branch yoke/<issue>
 
 # 6) submit work for review
 ./bin/yoke submit bd-a1b2 --done "Implemented X" --remaining "Add tests"
