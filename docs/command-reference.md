@@ -101,7 +101,7 @@ Output includes:
 - configured bd prefix
 - configured writer/reviewer agents and availability state
 - configured writer/reviewer command readiness
-- bd focused issue (current branch issue if its status is `in_progress`)
+- bd focused issue (from current branch or latest `yoke claim` handoff when status is `in_progress` or `in_review`)
 - next issue from bd (first `open` + `ready` issue)
 - basic tool availability (`git`, `bd`, `gh`)
 
@@ -127,8 +127,8 @@ Purpose:
 - run an automatic writer/reviewer loop against `bd` issue states
 
 Loop priority:
-1. run reviewer command for first issue in review queue (`blocked` + label `yoke:in_review`)
-2. otherwise run writer command for focused/in-progress issue
+1. run reviewer command for focused in-review issue (from branch or latest claim), else first issue in review queue (`blocked` + label `yoke:in_review`)
+2. otherwise run writer command for focused in-progress issue (from branch or latest claim)
 3. otherwise claim next issue from `bd list --status open --ready`
 4. otherwise idle
 5. if max iterations are reached without consensus, notify and keep PR draft/open
@@ -189,7 +189,8 @@ Behavior:
    - otherwise picks first ready open child task
    - if all child tasks are closed, closes the epic and exits
 3. `bd update <resolved-issue> --status in_progress --remove-label yoke:in_review`
-4. ensure worktree `.yoke/worktrees/<resolved-issue>` exists and is attached to branch `yoke/<resolved-issue>`
+4. persist daemon focus to `<repo>/.yoke/daemon-focus` so active daemons resume this issue
+5. ensure worktree `.yoke/worktrees/<resolved-issue>` exists and is attached to branch `yoke/<resolved-issue>`
 
 Failure cases:
 - `bd` missing

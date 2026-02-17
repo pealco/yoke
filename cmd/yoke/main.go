@@ -26,6 +26,7 @@ const (
 	defaultBDPrefix   = "bd"
 	defaultDaemonPoll = 30 * time.Second
 	reviewQueueLabel  = "yoke:in_review"
+	daemonFocusFile   = "daemon-focus"
 	epicPassCount     = 5
 	minEpicPassCount  = 0
 
@@ -40,8 +41,9 @@ const (
 var epicImprovementPromptTemplate string
 
 var (
-	assignPattern = regexp.MustCompile(`^([A-Z0-9_]+)\s*=\s*(.+)$`)
-	lookPath      = exec.LookPath
+	assignPattern   = regexp.MustCompile(`^([A-Z0-9_]+)\s*=\s*(.+)$`)
+	anyIssuePattern = regexp.MustCompile(`[a-z0-9][a-z0-9._-]*-[a-z0-9]+(?:\.[a-z0-9]+)*`)
+	lookPath        = exec.LookPath
 )
 
 type agentSpec struct {
@@ -405,7 +407,11 @@ func cmdStatus(args []string) error {
 	bdFocus := "unavailable"
 	bdNext := "unavailable"
 	if bdAvailable {
-		bdFocus = issueOrNone(focusedIssueID(cfg.BDPrefix))
+		focusIssue := focusedIssueByWorkflowStatus(root, cfg.BDPrefix, "in_progress")
+		if focusIssue == "" {
+			focusIssue = focusedIssueByWorkflowStatus(root, cfg.BDPrefix, "in_review")
+		}
+		bdFocus = issueOrNone(focusIssue)
 		bdNext = issueOrNone(nextIssueID(cfg.BDPrefix))
 	}
 
@@ -566,7 +572,10 @@ func parseDaemonInterval(raw string) (time.Duration, error) {
 }
 
 func runDaemonIteration(root string, cfg config, writerCmd, reviewerCmd string) (string, error) {
-	reviewable := firstReviewableIssueID(cfg.BDPrefix)
+	reviewable := focusedIssueByWorkflowStatus(root, cfg.BDPrefix, "in_review")
+	if reviewable == "" {
+		reviewable = firstReviewableIssueID(cfg.BDPrefix)
+	}
 	if reviewable != "" {
 		worktreePath, err := ensureIssueWorktree(root, reviewable)
 		if err != nil {
@@ -578,7 +587,7 @@ func runDaemonIteration(root string, cfg config, writerCmd, reviewerCmd string) 
 		return "reviewed " + reviewable, nil
 	}
 
-	inProgress, err := focusedOrInProgressIssueID(cfg.BDPrefix)
+	inProgress, err := focusedOrInProgressIssueID(root, cfg.BDPrefix)
 	if err != nil {
 		return "", err
 	}
@@ -684,34 +693,68 @@ func unresolvedConsensusIssue(prefix string) (string, string, error) {
 	return "", "", nil
 }
 
-func focusedOrInProgressIssueID(prefix string) (string, error) {
-	focused := focusedIssueID(prefix)
+func focusedOrInProgressIssueID(root, prefix string) (string, error) {
+	focused := focusedIssueByWorkflowStatus(root, prefix, "in_progress")
 	if focused != "" {
-		status, err := issueStatus(focused)
-		if err != nil {
-			return "", err
-		}
-		if status == "in_progress" {
-			return focused, nil
-		}
+		return focused, nil
 	}
 	return firstIssueByStatus(prefix, "in_progress")
 }
 
-func focusedIssueID(prefix string) string {
+func focusedIssueByWorkflowStatus(root, prefix, desiredStatus string) string {
 	branchIssue := currentBranchIssue(prefix)
-	if branchIssue == "" {
-		return ""
+	if branchIssue != "" {
+		status, err := issueStatus(branchIssue)
+		if err == nil && status == desiredStatus {
+			return branchIssue
+		}
 	}
 
-	status, err := issueStatus(branchIssue)
+	focused := daemonFocusedIssue(root)
+	if focused == "" {
+		return ""
+	}
+	status, err := issueStatus(focused)
+	if err != nil {
+		clearDaemonFocusIssue(root)
+		return ""
+	}
+	if status == desiredStatus {
+		return focused
+	}
+	if status != "in_progress" && status != "in_review" {
+		clearDaemonFocusIssue(root)
+	}
+	return ""
+}
+
+func daemonFocusPath(root string) string {
+	return filepath.Join(root, ".yoke", daemonFocusFile)
+}
+
+func daemonFocusedIssue(root string) string {
+	path := daemonFocusPath(root)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
-	if status == "in_progress" {
-		return branchIssue
+	return strings.ToLower(strings.TrimSpace(string(data)))
+}
+
+func writeDaemonFocusIssue(root, issue string) error {
+	path := daemonFocusPath(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
 	}
-	return ""
+	value := strings.ToLower(strings.TrimSpace(issue))
+	if value == "" {
+		return errors.New("focus issue cannot be empty")
+	}
+	return os.WriteFile(path, []byte(value+"\n"), 0o644)
+}
+
+func clearDaemonFocusIssue(root string) {
+	_ = os.Remove(daemonFocusPath(root))
 }
 
 func worktreePathForIssue(root, issue string) string {
@@ -1890,6 +1933,11 @@ func cmdClaim(args []string) error {
 		return err
 	}
 	claimNote("Issue state updated successfully.")
+	if err := writeDaemonFocusIssue(root, issue); err != nil {
+		claimNote("warning: failed to persist daemon focus issue: " + err.Error())
+	} else {
+		claimNote("Set daemon focus issue: " + issue)
+	}
 
 	branch := branchForIssue(issue)
 	claimNote("Preparing issue worktree for branch: " + branch)
@@ -2180,6 +2228,7 @@ func cmdReview(args []string) error {
 		if err := ensureIssuePRReady(issue); err != nil {
 			return err
 		}
+		clearDaemonFocusIssue(root)
 		note("Approved " + issue)
 	case "reject":
 		if rejectReason != "" {
@@ -2196,6 +2245,9 @@ func cmdReview(args []string) error {
 		}
 		if currentStatus != "in_progress" {
 			return fmt.Errorf("bd update did not return %s to in_progress (current status: %s)", issue, currentStatus)
+		}
+		if err := writeDaemonFocusIssue(root, issue); err != nil {
+			note("warning: failed to persist daemon focus issue: " + err.Error())
 		}
 		note("Rejected " + issue)
 	default:
@@ -2640,6 +2692,10 @@ func extractIssueID(s, prefix string) string {
 	return issuePatternForPrefix(prefix).FindString(strings.ToLower(s))
 }
 
+func extractIssueIDAnyPrefix(s string) string {
+	return anyIssuePattern.FindString(strings.ToLower(s))
+}
+
 func looksLikeIssueID(value, prefix string) bool {
 	pattern := issuePatternForPrefix(prefix)
 	return pattern.FindString(strings.ToLower(value)) == strings.ToLower(value)
@@ -2668,7 +2724,10 @@ func currentBranchIssue(prefix string) string {
 	if err != nil {
 		return ""
 	}
-	return extractIssueID(output, prefix)
+	if issue := extractIssueID(output, prefix); issue != "" {
+		return issue
+	}
+	return extractIssueIDAnyPrefix(output)
 }
 
 func branchForIssue(issue string) string {
@@ -3061,7 +3120,7 @@ Output fields:
   - writer_agent / reviewer_agent: configured agent ids (or unset)
   - writer_agent_status / reviewer_agent_status: binary availability summary
   - writer_command / reviewer_command: daemon command readiness
-  - bd_focus: focused in-progress issue inferred from current branch (or none/unavailable)
+  - bd_focus: focused issue inferred from current branch or latest claim handoff (or none/unavailable)
   - bd_next: next ready open issue from bd (or none/unavailable)
   - tool_git / tool_bd / tool_gh: command availability
 
@@ -3083,8 +3142,8 @@ Purpose:
   Run an automatic code -> review loop for bd issues using configured writer/reviewer commands.
 
 Loop priority (each iteration):
-  1) Review first issue from the review queue (status blocked + label yoke:in_review).
-  2) Otherwise run writer command on focused/in_progress issue.
+  1) Review focused in-review issue (from branch or latest claim), else first review queue issue.
+  2) Otherwise run writer command on focused in-progress issue (from branch or latest claim).
   3) Otherwise claim next ready open issue from bd.
   4) Otherwise idle (sleep and poll again in continuous mode).
   5) If max iterations are reached without consensus, daemon notifies and leaves PR draft/open.

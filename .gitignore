@@ -3,3 +3,4 @@ dist/
 .beads/
 .yoke/epic-improvement-reports/
 .yoke/worktrees/
+.yoke/daemon-focus

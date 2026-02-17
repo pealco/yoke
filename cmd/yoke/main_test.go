@@ -55,6 +55,17 @@ func TestExtractIssueID(t *testing.T) {
 	}
 }
 
+func TestExtractIssueIDAnyPrefix(t *testing.T) {
+	t.Parallel()
+
+	if got := extractIssueIDAnyPrefix("working on yoke-3kg.1 next"); got != "yoke-3kg.1" {
+		t.Fatalf("expected yoke-3kg.1, got %q", got)
+	}
+	if got := extractIssueIDAnyPrefix("no issue here"); got != "" {
+		t.Fatalf("expected empty issue ID, got %q", got)
+	}
+}
+
 func TestLoadConfig(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.sh")
@@ -122,6 +133,27 @@ func TestWorktreePathForIssue(t *testing.T) {
 	want := filepath.Join(root, ".yoke", "worktrees", "bd-abc123")
 	if got != want {
 		t.Fatalf("worktreePathForIssue = %q, want %q", got, want)
+	}
+}
+
+func TestDaemonFocusIssueLifecycle(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if got := daemonFocusedIssue(root); got != "" {
+		t.Fatalf("expected empty focus issue before write, got %q", got)
+	}
+
+	if err := writeDaemonFocusIssue(root, "YOKE-3KG.1"); err != nil {
+		t.Fatalf("writeDaemonFocusIssue: %v", err)
+	}
+	if got := daemonFocusedIssue(root); got != "yoke-3kg.1" {
+		t.Fatalf("daemonFocusedIssue = %q, want yoke-3kg.1", got)
+	}
+
+	clearDaemonFocusIssue(root)
+	if got := daemonFocusedIssue(root); got != "" {
+		t.Fatalf("expected empty focus issue after clear, got %q", got)
 	}
 }
 
