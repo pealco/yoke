@@ -659,8 +659,8 @@ func daemonCommandEnv(base []string, issue, worktreeRoot, mainRoot, bdPrefix, ro
 		"YOKE_ROLE="+role,
 	)
 	binDirs := []string{
-		filepath.Join(worktreeRoot, "bin"),
 		filepath.Join(mainRoot, "bin"),
+		filepath.Join(worktreeRoot, "bin"),
 	}
 	env = appendOrPrependPath(env, binDirs...)
 	return env

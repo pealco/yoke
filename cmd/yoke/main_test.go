@@ -1002,6 +1002,35 @@ func TestAppendOrPrependPath(t *testing.T) {
 	}
 }
 
+func TestDaemonCommandEnvPrefersMainBin(t *testing.T) {
+	t.Parallel()
+
+	env := daemonCommandEnv(
+		[]string{"PATH=/usr/bin"},
+		"yoke-3kg.2",
+		"/tmp/worktree",
+		"/tmp/main",
+		"yoke",
+		"writer",
+	)
+
+	var gotPath string
+	for _, item := range env {
+		if strings.HasPrefix(item, "PATH=") {
+			gotPath = strings.TrimPrefix(item, "PATH=")
+			break
+		}
+	}
+	if gotPath == "" {
+		t.Fatalf("PATH not found in env: %#v", env)
+	}
+
+	wantPrefix := "/tmp/main/bin" + string(os.PathListSeparator) + "/tmp/worktree/bin" + string(os.PathListSeparator)
+	if !strings.HasPrefix(gotPath, wantPrefix) {
+		t.Fatalf("expected PATH prefix %q, got %q", wantPrefix, gotPath)
+	}
+}
+
 func TestDaemonLogFilterSuppressesRolloutNoise(t *testing.T) {
 	t.Parallel()
 
